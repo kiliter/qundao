@@ -1,0 +1,11 @@
+# 自动生成的本地运行配置
+version = 1
+name = "群岛"
+
+[setup]
+script = ""
+
+[[actions]]
+name = "Run"
+icon = "run"
+command = "./script/build_and_run.sh"
