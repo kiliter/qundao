@@ -49,7 +49,10 @@ import SwiftUI
   var minimumCompactWidth: CGFloat { metrics.hasNotch ? notchWidth + 56 : 140 }
   /// 处理中时收起态两翼加宽，留出阶段标签（倒计时、Jev、摘要等）。
   static let activeExtraWidth: CGFloat = 52
-  static let pipelineHeight: CGFloat = 94
+  /// 展开面板固定区：剪报标题、状态条、底栏。
+  static let headerHeight: CGFloat = 64
+  static let statusHeight: CGFloat = 46
+  static let footerHeight: CGFloat = 38
   var compactWidth: CGFloat {
     let base = max(minimumCompactWidth, store.preferences.notchCompactWidth ?? Double(minimumCompactWidth + 16))
     return min(base + (store.activity.phase.isActive ? Self.activeExtraWidth : 0), metrics.frame.width - 24)
@@ -60,16 +63,15 @@ import SwiftUI
   /// 列表实测高度（展开某群后会变高）；尚未测量时按行数估算。
   @ObservationIgnored private(set) var measuredListHeight: CGFloat?
   var maxListHeight: CGFloat {
-    max(120, metrics.visibleHeight - 20 - barHeight - 44 - 38 - (store.activity.pipelineVisible ? Self.pipelineHeight : 0))
+    max(120, metrics.visibleHeight - 20 - barHeight - Self.headerHeight - Self.statusHeight - Self.footerHeight)
   }
   /// 标题区 + 列表内容 + 底栏，内容有多少显示多少，只有超过屏幕可用高度才在列表内滚动。
   var expandedHeight: CGFloat {
     let rows = store.pendingAttention.threads.count
-    let estimate: CGFloat = CGFloat(rows) * 64 + 8
+    let estimate: CGFloat = CGFloat(rows) * 112 + 20
     // 测量值至少保留一行高度，避免列表被压成 0 后再也测不到真实内容。
-    let content: CGFloat = rows == 0 ? 120 : min(maxListHeight, max(72, measuredListHeight ?? estimate))
-    let pipeline: CGFloat = store.activity.pipelineVisible ? Self.pipelineHeight : 0
-    return min(barHeight + 44 + pipeline + content + 38, metrics.visibleHeight - 20)
+    let content: CGFloat = rows == 0 ? 150 : min(maxListHeight, max(90, measuredListHeight ?? estimate))
+    return min(barHeight + Self.headerHeight + Self.statusHeight + content + Self.footerHeight, metrics.visibleHeight - 20)
   }
   func listMeasured(_ height: CGFloat) {
     // 尚未排版时 preference 会给出默认 0，忽略。
@@ -81,7 +83,7 @@ import SwiftUI
   var shapeSize: CGSize {
     expanded ? CGSize(width: expandedWidth, height: expandedHeight) : CGSize(width: compactWidth, height: barHeight)
   }
-  var shapeRadius: CGFloat { expanded ? 24 : 14 }
+  var shapeRadius: CGFloat { expanded ? 22 : 14 }
 
   init(store: AppStore) {
     self.store = store
@@ -152,7 +154,6 @@ import SwiftUI
   private func observeSizes() {
     withObservationTracking {
       _ = compactWidth; _ = expandedWidth; _ = store.pendingAttention.threads.count
-      _ = store.activity.pipelineVisible
     } onChange: { [weak self] in
       Task { @MainActor in
         guard let self else { return }
@@ -401,111 +402,7 @@ private final class NotchContainerView: NSView {
   override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
 }
 
-private enum IslandColor {
-  static let mint = Color(red: 0.37, green: 0.88, blue: 0.70)
-  static let amber = Color(red: 1, green: 0.72, blue: 0.30)
-  static let violet = Color(red: 0.66, green: 0.55, blue: 1)
-  static let cyan = Color(red: 0.31, green: 0.76, blue: 1)
-  static let orange = Color(red: 1, green: 0.54, blue: 0.36)
-  static let grey = Color(white: 0.55)
-  static let count = Color(red: 0.75, green: 0.77, blue: 1)
-  static func of(_ phase: IslandPhase) -> Color {
-    switch phase {
-    case .idle, .attention: mint
-    case .paused, .waiting: grey
-    case .buffering: amber
-    case .judging: violet
-    case .loading, .summarizing: cyan
-    case .retrying: orange
-    }
-  }
-}
-
-/// 阶段图形：空闲常亮点、缓冲倒计时环、Jev 跳动省略号、摘要转圈、退避箭头、新增勾号。
-private struct ActivityGlyph: View {
-  let phase: IslandPhase
-  var deadline: Date?
-  var total: Double = 3
-  var animate = true
-  var size: CGFloat = 14
-  @Environment(\.accessibilityReduceMotion) private var reduceMotion
-  var body: some View {
-    let color = IslandColor.of(phase)
-    let moving = animate && !reduceMotion
-    ZStack {
-      switch phase {
-      case .idle:
-        Circle().fill(color).frame(width: size * 0.43, height: size * 0.43).shadow(color: color.opacity(0.8), radius: 3)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .paused:
-        Circle().stroke(color, lineWidth: 1.5).frame(width: size * 0.5, height: size * 0.5)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .buffering:
-        CountdownRing(deadline: deadline, total: total, color: color, ticking: animate)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .judging:
-        Image(systemName: "ellipsis").font(.system(size: size * 0.8, weight: .heavy)).foregroundStyle(color)
-          .symbolEffect(.variableColor.iterative.dimInactiveLayers, options: .repeating, isActive: moving)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .waiting:
-        Image(systemName: "ellipsis").font(.system(size: size * 0.8, weight: .heavy)).foregroundStyle(color)
-          .symbolEffect(.pulse, options: .repeating, isActive: moving)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .loading, .summarizing:
-        Spinner(color: color, moving: moving).transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .retrying:
-        Image(systemName: "arrow.clockwise").font(.system(size: size * 0.72, weight: .bold)).foregroundStyle(color)
-          .symbolEffect(.pulse, options: .repeating, isActive: moving)
-          .transition(.scale(scale: 0.3).combined(with: .opacity))
-      case .attention:
-        Image(systemName: "checkmark.circle.fill").font(.system(size: size * 0.86, weight: .bold)).foregroundStyle(color)
-          .transition(.scale(scale: 0.2).combined(with: .opacity))
-      }
-    }
-    .frame(width: size, height: size)
-    .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.45), value: phase)
-    .accessibilityHidden(true)
-  }
-}
-
-/// 剩余时间环：截止时间按首条到达固定，环随时间消耗。
-private struct CountdownRing: View {
-  let deadline: Date?
-  let total: Double
-  let color: Color
-  let ticking: Bool
-  var body: some View {
-    TimelineView(.animation(minimumInterval: 0.1, paused: !ticking || deadline == nil)) { context in
-      let left = max(0, (deadline ?? context.date).timeIntervalSince(ticking ? context.date : Date()))
-      let fraction = total > 0 ? min(1, left / total) : 0
-      ZStack {
-        Circle().stroke(Color.white.opacity(0.14), lineWidth: 2.2)
-        Circle().trim(from: 0, to: fraction).stroke(color, style: StrokeStyle(lineWidth: 2.2, lineCap: .round))
-          .rotationEffect(.degrees(-90))
-      }.padding(1.5)
-    }
-  }
-}
-
-private struct Spinner: View {
-  let color: Color
-  let moving: Bool
-  @State private var spin = false
-  var body: some View {
-    ZStack {
-      Circle().stroke(Color.white.opacity(0.14), lineWidth: 2)
-      Circle().trim(from: 0, to: 0.32).stroke(color, style: StrokeStyle(lineWidth: 2, lineCap: .round))
-        .rotationEffect(.degrees(spin ? 360 : 0))
-    }.padding(1.5)
-      .onAppear { start() }
-      .onChange(of: moving) { _, _ in start() }
-  }
-  private func start() {
-    guard moving else { spin = false; return }
-    spin = false
-    withAnimation(.linear(duration: 0.85).repeatForever(autoreverses: false)) { spin = true }
-  }
-}
+// MARK: - P5 风格视图
 
 extension IslandActivity {
   /// 收起态左翼的短标签；空闲与暂停不显示。
@@ -514,15 +411,15 @@ extension IslandActivity {
     case .idle, .paused: return nil
     case .buffering:
       guard let deadline = buffer.deadline else { return "缓冲" }
-      return String(format: "%.1fs", max(0, deadline.timeIntervalSince(now)))
+      return String(format: "%.0fs", max(0, deadline.timeIntervalSince(now)).rounded(.up))
     case .judging: return "Jev"
     case .loading: return "读取"
-    case .summarizing: return summaries.count > 1 ? "摘要 \(summaries.count)" : "摘要"
+    case .summarizing: return summaries.count > 1 ? "AI ×\(summaries.count)" : "AI"
     case .waiting: return "等 \(immediateWaiting + periodicWaiting)"
     case .retrying:
       guard let retryAt else { return "重试" }
       return "\(Int(max(0, retryAt.timeIntervalSince(now)).rounded(.up)))s"
-    case .attention: return "新关注"
+    case .attention: return "+1"
     }
   }
   var needsClock: Bool { phase == .buffering || phase == .retrying || !buffer.isEmpty || retryAt != nil }
@@ -533,10 +430,78 @@ extension IslandActivity {
     case .buffering: "缓冲中，\(buffer.count) 条消息等待提交"
     case .judging: "Jev 正在判断"
     case .loading: "正在读取群未读"
-    case .summarizing: "CPA 正在摘要 \(summaries.count) 个群"
+    case .summarizing: "AI 正在摘要 \(summaries.count) 个群"
     case .waiting: "\(immediateWaiting + periodicWaiting) 个摘要任务排队"
     case .retrying: "摘要或判断失败，等待重试"
     case .attention: "有新的关注内容"
+    }
+  }
+  /// 状态牌：标题 + 明细。
+  func plate(now: Date, usesJev: Bool, lastAnalysis: Date?, queue: String) -> (title: String, detail: String) {
+    switch phase {
+    case .paused: return ("已暂停", "监听已暂停")
+    case .idle:
+      if let lastAnalysis { return ("空闲", "全部处理完毕 · 上次摘要 \(lastAnalysis.formatted(.dateTime.hour().minute()))") }
+      return ("空闲", "全部处理完毕")
+    case .buffering:
+      let left = buffer.deadline.map { max(0, $0.timeIntervalSince(now)) } ?? 0
+      return ("缓冲中", buffer.count >= buffer.capacity ? "\(buffer.count) 条 · 容量已满"
+        : "\(buffer.count) 条 · \(String(format: "%.1f", left))s 后提交")
+    case .judging:
+      let rest = judgeBatches > 1 ? " · 余 \(judgeBatches - 1) 批" : ""
+      return (usesJev ? "Jev 判断" : "本地识别", "\(judgingGroupName ?? "相关性") 判断中\(rest)")
+    case .loading:
+      return ("AI摘要", "\(summaries.first?.groupName ?? "群聊") · 读取全部未读")
+    case .summarizing:
+      if summaries.count > 1 { return ("AI摘要", "\(summaries.count)/\(concurrency) 个群同时摘要") }
+      let first = summaries.first
+      return ("AI摘要", "\(first?.groupName ?? "群聊") · \(first?.messages ?? 0) 条未读 · 第 \(max(1, first?.requests ?? 1)) 次请求")
+    case .waiting: return ("排队中", queue)
+    case .retrying:
+      let left = retryAt.map { Int(max(0, $0.timeIntervalSince(now)).rounded(.up)) } ?? 0
+      return ("失败重试", "\(left)s 后重试 · 进度未推进")
+    case .attention: return ("新关注", "已生成新的关注内容")
+    }
+  }
+  /// 三段流水线各自是否在进行（可并行点亮）。
+  var stages: (buffer: Bool, judge: Bool, summary: Bool) {
+    (!buffer.isEmpty, judging || (judgeBatches > 0 && phase == .judging), !summaries.isEmpty)
+  }
+  var hot: Bool { [.buffering, .judging, .loading, .summarizing, .attention].contains(phase) }
+}
+
+/// 收起态 / 状态牌徽记：四角星；处理中旋转，空闲为灰，失败反向慢转。
+private struct P5Emblem: View {
+  let phase: IslandPhase
+  var size: CGFloat = 16
+  var animate = true
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  var body: some View {
+    let moving = animate && !reduceMotion && phase.isActive && phase != .attention
+    let speed: Double = switch phase {
+    case .summarizing, .loading: 400
+    case .judging: 260
+    case .retrying: -120
+    default: 150
+    }
+    TimelineView(.animation(minimumInterval: 1.0 / 30, paused: !moving)) { context in
+      let angle = moving ? context.date.timeIntervalSinceReferenceDate * speed : 0
+      P5Spark()
+        .fill(fill)
+        .overlay(P5Spark().stroke(.white, lineWidth: 1))
+        .frame(width: size, height: size)
+        .rotationEffect(.degrees(angle.truncatingRemainder(dividingBy: 360)))
+    }
+    .scaleEffect(phase == .attention && !reduceMotion ? 1.25 : 1)
+    .animation(reduceMotion ? nil : P5.pop, value: phase)
+    .accessibilityHidden(true)
+  }
+  private var fill: Color {
+    switch phase {
+    case .idle: Color(white: 0.24)
+    case .paused, .waiting: Color(white: 0.4)
+    case .retrying: Color(white: 0.55)
+    default: P5.red
     }
   }
 }
@@ -552,320 +517,413 @@ private struct NotchBar: View {
       controller.toggle()
     } label: {
       HStack(spacing: 0) {
-        // 只有缓冲倒计时 / 重试倒数需要时钟；空闲时暂停，避免每 0.1 秒重算整条工具栏。
-        TimelineView(.animation(minimumInterval: 0.1, paused: !activity.needsClock || controller.expanded)) { context in
-          HStack(spacing: 5) {
-            ActivityGlyph(phase: activity.phase, deadline: activity.buffer.deadline,
-                          total: store.preferences.bufferInterval, animate: !controller.expanded)
-            // 展开后标题区已显示完整状态，收起态才显示标签。
+        // 只有缓冲倒计时 / 重试倒数需要时钟；空闲时暂停。
+        TimelineView(.animation(minimumInterval: 0.25, paused: !activity.needsClock || controller.expanded)) { context in
+          HStack(spacing: 6) {
+            P5Emblem(phase: activity.phase, animate: !controller.expanded)
             if !controller.expanded, let label = activity.compactLabel(now: activity.needsClock ? context.date : Date()) {
-              Text(label).font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
-                .foregroundStyle(IslandColor.of(activity.phase)).lineLimit(1).fixedSize()
-                .transition(.opacity.combined(with: .move(edge: .leading)))
+              Text(label).font(P5.heavy(11)).monospacedDigit().foregroundStyle(.white).lineLimit(1).fixedSize()
+                .padding(.horizontal, 7).padding(.vertical, 2.5)
+                .background(activity.phase == .retrying ? Color(white: 0.3) : P5.red, in: P5Slant(slant: 0.16))
+                .transition(.scale(scale: 0.2, anchor: .leading).combined(with: .opacity))
             }
           }
         }
         .frame(maxWidth: .infinity)
         Color.clear.frame(width: controller.metrics.hasNotch ? controller.notchWidth : 50)
         HStack(spacing: 4) {
-          if controller.pinned { Image(systemName: "pin.fill").font(.system(size: 9)) }
-          Text(count == 0 ? "·" : "\(count)")
-            .font(.system(size: 11, weight: .semibold, design: .rounded)).monospacedDigit()
+          if controller.pinned { P5Spark().fill(P5.red).frame(width: 8, height: 8) }
+          Text(count == 0 ? "—" : "\(count)")
+            .font(P5.numeral(13))
             .contentTransition(.numericText(value: Double(count)))
-            .scaleEffect(activity.phase == .attention && !reduceMotion ? 1.25 : 1)
-        }.foregroundStyle(activity.phase == .attention ? .white : IslandColor.count).frame(maxWidth: .infinity)
+            .foregroundStyle(count == 0 ? Color(white: 0.4) : (activity.phase == .attention ? P5.red : .white))
+            .scaleEffect(activity.phase == .attention && !reduceMotion ? 1.35 : 1)
+        }.frame(maxWidth: .infinity)
       }.padding(.horizontal, 8).frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
-        .animation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.45), value: count)
-        .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.3), value: activity.phase)
+        .animation(reduceMotion ? nil : P5.pop, value: count)
+        .animation(reduceMotion ? nil : P5.snap, value: activity.phase)
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("群岛，\(activity.accessibilityText)，\(count) 条待关注内容。点击固定或收起")
     }.buttonStyle(.plain)
   }
 }
 
-/// 展开面板顶部的处理流水线：缓冲 → Jev → CPA。各阶段并行时分别点亮。
-private struct NotchPipeline: View {
+/// 状态条：斜切状态牌（切换时从左侧打出）+ 三段箭头流水线 + 缓冲倒计时条。
+private struct P5StatusStrip: View {
   let activity: IslandActivity
   let interval: Double
   let usesJev: Bool
+  let lastAnalysis: Date?
+  let queue: String
   let animate: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   var body: some View {
     TimelineView(.animation(minimumInterval: 0.1, paused: !activity.needsClock || !animate)) { context in
       let now = activity.needsClock ? context.date : Date()
-      VStack(alignment: .leading, spacing: 7) {
-        HStack(spacing: 0) {
-          step("缓冲", bufferDetail(now), phase: activity.buffer.isEmpty ? nil : .buffering)
-          link(on: activity.judging)
-          step(usesJev ? "Jev 判断" : "本地识别", jevDetail, phase: activity.judging ? .judging : (activity.judgeBatches > 0 && usesJev ? .waiting : nil))
-          link(on: activity.summaries.contains(where: \.loading))
-          step("CPA 摘要", cpaDetail(now), phase: cpaPhase)
+      let plate = activity.plate(now: now, usesJev: usesJev, lastAnalysis: lastAnalysis, queue: queue)
+      let stages = activity.stages
+      VStack(alignment: .leading, spacing: 5) {
+        HStack(spacing: 8) {
+          HStack(spacing: 7) {
+            Text(plate.title).font(P5.heavy(13)).kerning(1).fixedSize()
+            Text(plate.detail).font(.system(size: 10.5, weight: .medium)).monospacedDigit().lineLimit(1)
+              .foregroundStyle(activity.hot ? Color.white.opacity(0.82) : Color(white: 0.3))
+          }
+          .foregroundStyle(activity.hot ? .white : .black)
+          .padding(.leading, 10).padding(.trailing, 16).frame(height: 28)
+          .background(activity.hot ? P5.red : .white, in: P5Slant(slant: -0.035))
+          .id(activity.phase)
+          .transition(reduceMotion ? .opacity : .asymmetric(
+            insertion: .scale(scale: 0.05, anchor: .leading).combined(with: .opacity), removal: .opacity))
+          .layoutPriority(1)
+          Spacer(minLength: 0)
+          HStack(spacing: 2) {
+            chevron("缓冲中", on: stages.buffer, first: true)
+            chevron(usesJev ? "Jev 判断" : "本地识别", on: stages.judge, first: false)
+            chevron("AI摘要", on: stages.summary, dim: activity.phase == .retrying, first: false)
+          }.fixedSize()
         }.frame(height: 30)
         GeometryReader { proxy in
           let fraction = activity.buffer.deadline.map { max(0, min(1, $0.timeIntervalSince(now) / max(0.1, interval))) } ?? 0
           ZStack(alignment: .leading) {
-            Capsule().fill(Color.white.opacity(0.07))
-            Capsule().fill(IslandColor.amber).frame(width: proxy.size.width * fraction)
-          }
-        }.frame(height: 2).opacity(activity.buffer.isEmpty ? 0 : 1)
-        HStack(spacing: 6) {
-          ForEach(chips, id: \.0) { chip in
-            HStack(spacing: 5) {
-              Circle().fill(chip.2).frame(width: 5, height: 5)
-              Text(chip.1).lineLimit(1)
-            }.font(.system(size: 10.5)).foregroundStyle(.white.opacity(0.78))
-              .padding(.horizontal, 7).padding(.vertical, 2)
-              .background(Color.white.opacity(0.06), in: Capsule())
-          }
-          Spacer(minLength: 0)
-        }.frame(height: 18).clipped()
+            Rectangle().fill(Color(white: 0.14))
+            Rectangle().fill(P5.red).frame(width: proxy.size.width * fraction)
+          }.transformEffect(CGAffineTransform(a: 1, b: 0, c: -0.6, d: 1, tx: 0, ty: 0))
+        }.frame(height: 3).opacity(activity.buffer.isEmpty ? 0 : 1)
       }
-      .padding(.horizontal, 12).padding(.vertical, 9)
-      .background(Color(white: 0.07), in: RoundedRectangle(cornerRadius: 12))
-      .overlay(RoundedRectangle(cornerRadius: 12).stroke(Color.white.opacity(0.08)))
     }
+    .animation(reduceMotion ? nil : P5.snap, value: activity.phase)
     .accessibilityElement(children: .combine)
   }
-  private var cpaPhase: IslandPhase? {
-    if !activity.summaries.isEmpty { return activity.summaries.contains(where: { !$0.loading }) ? .summarizing : .loading }
-    if activity.retryAt != nil { return .retrying }
-    if activity.immediateWaiting + activity.periodicWaiting > 0 { return .waiting }
-    return nil
-  }
-  private func bufferDetail(_ now: Date) -> String {
-    guard let deadline = activity.buffer.deadline else { return "空" }
-    let left = max(0, deadline.timeIntervalSince(now))
-    return activity.buffer.count >= activity.buffer.capacity ? "\(activity.buffer.count) 条 · 容量已满"
-      : "\(activity.buffer.count) 条 · \(String(format: "%.1f", left))s 后提交"
-  }
-  private var jevDetail: String {
-    if activity.judging { return activity.judgeBatches > 1 ? "判断中 · 余 \(activity.judgeBatches - 1) 批" : "判断中" }
-    if activity.judgeBatches > 0 { return usesJev ? "待判 \(activity.judgeBatches) 批" : "处理中" }
-    return usesJev ? "空闲" : "直接命中即提交"
-  }
-  private func cpaDetail(_ now: Date) -> String {
-    if let first = activity.summaries.first {
-      if activity.summaries.count > 1 { return "\(activity.summaries.count)/\(activity.concurrency) 个群" }
-      return first.loading ? "读取全部未读…" : "\(first.messages) 条 · 第 \(max(1, first.requests)) 次请求"
-    }
-    if let retryAt = activity.retryAt { return "\(Int(max(0, retryAt.timeIntervalSince(now)).rounded(.up)))s 后重试" }
-    let waiting = activity.immediateWaiting + activity.periodicWaiting
-    return waiting > 0 ? "等待 \(waiting)" : "空闲"
-  }
-  private var chips: [(String, String, Color)] {
-    var result: [(String, String, Color)] = []
-    for item in activity.summaries.prefix(2) {
-      result.append(("s" + item.group, "\(item.groupName) · \(item.loading ? "读取未读" : "\(item.messages) 条未读")", IslandColor.cyan))
-    }
-    if let name = activity.judgingGroupName { result.append(("j", "\(name) · Jev", IslandColor.violet)) }
-    for group in activity.buffer.groups.prefix(2) {
-      result.append(("b" + group.group, "\(AppStore.shared.groupName(group.group)) · \(group.count) 条", IslandColor.amber))
-    }
-    if result.isEmpty, activity.immediateWaiting + activity.periodicWaiting > 0 {
-      result.append(("w", "即时等待 \(activity.immediateWaiting) · 定时等待 \(activity.periodicWaiting)", IslandColor.grey))
-    }
-    if result.isEmpty, activity.retryAt != nil { result.append(("r", "失败已保留，进度未推进", IslandColor.orange)) }
-    return Array(result.prefix(3))
-  }
-  private func link(on: Bool) -> some View {
-    Capsule().fill(on ? Color.white.opacity(0.45) : Color.white.opacity(0.12)).frame(width: 16, height: 1).padding(.horizontal, 6)
-  }
-  private func step(_ title: String, _ detail: String, phase: IslandPhase?) -> some View {
-    let lit = phase != nil
-    return HStack(spacing: 7) {
-      ActivityGlyph(phase: phase ?? .paused, deadline: activity.buffer.deadline, total: interval, animate: animate && lit)
-        .opacity(lit ? 1 : 0.45)
-      VStack(alignment: .leading, spacing: 1) {
-        Text(title).font(.system(size: 11.5, weight: .semibold))
-          .foregroundStyle(lit ? IslandColor.of(phase!) : Color.white.opacity(0.4))
-        Text(detail).font(.system(size: 10)).monospacedDigit().lineLimit(1)
-          .foregroundStyle(lit ? Color.white.opacity(0.72) : Color.white.opacity(0.32))
-      }
-    }.frame(maxWidth: .infinity, alignment: .leading)
+  private func chevron(_ title: String, on: Bool, dim: Bool = false, first: Bool) -> some View {
+    Text(title).font(P5.heavy(9.5)).lineLimit(1)
+      .foregroundStyle(on ? .white : (dim ? Color(white: 0.75) : Color(white: 0.45)))
+      .padding(.leading, first ? 9 : 12).padding(.trailing, 11).frame(height: 22)
+      .background(on ? P5.red : (dim ? Color(white: 0.24) : Color(white: 0.12)), in: P5Chevron(first: first))
   }
 }
 
-/// 刘海展开内容：每行一个群，显示群名与最新待关注摘要；点击行在主窗口打开该群。
+/// 斜切小按钮：黑底白字，悬停反白。
+private struct P5Button<Label: View>: View {
+  let help: String
+  let action: () -> Void
+  @ViewBuilder let label: () -> Label
+  @State private var hovering = false
+  var body: some View {
+    Button(action: action) {
+      label().foregroundStyle(hovering ? Color.black : .white)
+        .background(hovering ? Color.white : .black, in: P5Slant(slant: 0.12))
+    }.buttonStyle(.plain).onHover { hovering = $0 }.help(help).accessibilityLabel(help)
+  }
+}
+
+/// 展开内容：剪报标题 + 爆炸星计数、状态条、群卡片、底栏，以及新关注插播。
 private struct NotchExpandedContent: View {
   let controller: NotchController
   @Environment(AppStore.self) var store
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var bump = false
   var body: some View {
     let threads = store.pendingAttention.threads
     let activity = store.activity
+    let count = store.pendingFocusCount
     VStack(spacing: 0) {
-      HStack(spacing: 10) {
-        Text("需要关注").font(.system(size: 13, weight: .semibold))
-        Text("\(store.pendingFocusCount)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-          .contentTransition(.numericText(value: Double(store.pendingFocusCount)))
+      HStack(alignment: .center, spacing: 8) {
+        P5Ransom(text: "需要关注")
+        ZStack {
+          P5Burst().fill(.black).overlay(P5Burst().stroke(.white, lineWidth: 1.6))
+          Text("\(count)").font(P5.numeral(count > 99 ? 12 : 16)).foregroundStyle(.white)
+            .shadow(color: .black, radius: 0, x: 2, y: 2)
+            .contentTransition(.numericText(value: Double(count)))
+        }.frame(width: 42, height: 42)
+          .rotationEffect(.degrees(bump ? 18 : 0)).scaleEffect(bump ? 1.18 : 1)
+          .accessibilityLabel("\(count) 条待关注")
         Spacer()
-        Button("一键已阅", systemImage: "checkmark.circle") {
-          store.readFocusEntries(store.pendingAttention.entries)
-        }.buttonStyle(.borderless).font(.caption).disabled(threads.isEmpty)
-          .help("将当前账号所有待关注内容标记已阅；不改变微信未读")
-        Button { controller.togglePin() } label: {
-          Image(systemName: controller.pinned ? "pin.fill" : "pin")
-        }.buttonStyle(.plain).foregroundStyle(.secondary)
-          .help(controller.pinned ? "取消固定" : "固定刘海")
-          .accessibilityLabel(controller.pinned ? "取消固定" : "固定刘海")
-        Button { controller.collapse() } label: { Image(systemName: "chevron.up") }
-          .buttonStyle(.plain).foregroundStyle(.secondary).help("收起刘海").accessibilityLabel("收起刘海")
-      }.padding(.horizontal, 16).frame(height: 44)
-      if activity.pipelineVisible {
-        NotchPipeline(activity: activity, interval: store.preferences.bufferInterval,
-                      usesJev: store.preferences.usesJev, animate: controller.contentVisible)
-          .padding(.horizontal, 12).padding(.bottom, 8)
-          .frame(height: NotchController.pipelineHeight, alignment: .top)
-          .transition(.opacity.combined(with: .move(edge: .top)))
-      }
+        VStack(alignment: .trailing, spacing: 6) {
+          HStack(spacing: 4) {
+            P5Button(help: controller.pinned ? "取消固定" : "固定刘海", action: { controller.togglePin() }) {
+              Image(systemName: controller.pinned ? "pin.fill" : "pin").font(.system(size: 9.5, weight: .bold))
+                .frame(width: 24, height: 20)
+            }
+            P5Button(help: "收起刘海", action: { controller.collapse() }) {
+              Image(systemName: "chevron.up").font(.system(size: 9.5, weight: .heavy)).frame(width: 24, height: 20)
+            }
+          }
+          P5Button(help: "将当前账号所有待关注内容标记已阅；不改变微信未读", action: {
+            store.readFocusEntries(store.pendingAttention.entries)
+          }) {
+            Text("一键已阅").font(P5.heavy(11)).kerning(1).padding(.horizontal, 13).frame(height: 22)
+          }.disabled(threads.isEmpty).opacity(threads.isEmpty ? 0.6 : 1)
+        }
+      }.padding(.horizontal, 14).frame(height: NotchController.headerHeight)
+      P5StatusStrip(activity: activity, interval: store.preferences.bufferInterval, usesJev: store.preferences.usesJev,
+                    lastAnalysis: store.lastAnalysis, queue: store.queueDescription, animate: controller.contentVisible)
+        .padding(.horizontal, 14).frame(height: NotchController.statusHeight, alignment: .top)
       if threads.isEmpty {
-        VStack(spacing: 8) {
-          Image(systemName: "checkmark.bubble").font(.title2).foregroundStyle(.secondary)
-          Text("暂无待关注内容").font(.callout)
-          Text("与你相关的群聊摘要会出现在这里").font(.caption).foregroundStyle(.secondary)
+        VStack(spacing: 12) {
+          Text("全部清空").font(P5.heavy(24)).foregroundStyle(.black)
+            .padding(.horizontal, 14).padding(.vertical, 6)
+            .background { ZStack { P5.red.offset(x: 6, y: 6); Color.white } }
+            .rotationEffect(.degrees(-4))
+          Text("白名单群有与你相关的新动向，会第一时间出现在这里").font(.caption).foregroundStyle(Color(white: 0.6))
         }.frame(maxWidth: .infinity, maxHeight: .infinity)
       } else {
         let updating = Set(activity.summaries.map(\.group))
         ScrollView {
-          LazyVStack(spacing: 0) {
+          LazyVStack(spacing: 14) {
             ForEach(Array(threads.enumerated()), id: \.element.id) { index, thread in
-              NotchThreadRow(thread: thread, updating: updating.contains(thread.id), separated: index > 0) {
+              NotchThreadRow(thread: thread, index: index, updating: updating.contains(thread.id)) {
                 store.attentionGroupID = thread.id
                 store.page = .attention
                 AppDelegate.shared?.showMain()
                 controller.collapse()
               }
-              .transition(.opacity.combined(with: .move(edge: .top)))
+              .transition(reduceMotion ? .opacity : .asymmetric(
+                insertion: .move(edge: .leading).combined(with: .opacity), removal: .opacity))
             }
-          }.padding(.horizontal, 8).padding(.bottom, 4)
+          }.padding(.leading, 16).padding(.trailing, 20).padding(.top, 6).padding(.bottom, 14)
             // 直接在测量视图内回报高度：preference 在这个宿主中不能从 ScrollView 内容向外传递。
             .background(GeometryReader { proxy in
               Color.clear
                 .onAppear { controller.listMeasured(proxy.size.height) }
                 .onChange(of: proxy.size.height) { _, height in controller.listMeasured(height) }
             })
-        }.scrollIndicators(.automatic)
+        }.scrollIndicators(.never)
       }
       HStack(spacing: 6) {
-        Text(footer(activity)).font(.caption2).foregroundStyle(.secondary).lineLimit(1)
+        Text("待阅 \(count) · \(threads.count) 个群").font(.system(size: 10.5)).foregroundStyle(Color(white: 0.6)).lineLimit(1)
         Spacer()
-        Button("打开主窗口 ↗") {
+        Button {
           store.page = .attention
           AppDelegate.shared?.showMain()
           controller.collapse()
-        }.buttonStyle(.borderless).font(.caption)
-      }.padding(.horizontal, 16).frame(height: 38)
-        .overlay(alignment: .top) { Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1) }
+        } label: {
+          HStack(spacing: 4) { Text("打开主窗口"); Image(systemName: "play.fill").font(.system(size: 7)) }
+            .font(P5.heavy(11)).foregroundStyle(.white).padding(.horizontal, 12).frame(height: 22)
+            .background(P5.red, in: P5Slant(slant: 0.08))
+        }.buttonStyle(.plain)
+      }.padding(.horizontal, 16).frame(height: NotchController.footerHeight)
+        .overlay(alignment: .top) { Rectangle().fill(Color(white: 0.11)).frame(height: 2) }
     }
-    .animation(reduceMotion ? nil : .spring(duration: 0.35, bounce: 0.2), value: activity.pipelineVisible)
-    .animation(reduceMotion ? nil : .spring(duration: 0.4, bounce: 0.25), value: threads.map(\.id))
+    .background(P5Backdrop())
+    .overlay { P5CutIn(active: activity.phase == .attention, definite: threads.first.map { thread in
+      thread.entries.contains { thread.tags(for: $0).contains(where: \.definite) } } ?? false) }
+    .animation(reduceMotion ? nil : .timingCurve(0.7, 0, 0.2, 1, duration: 0.36), value: threads.map(\.id))
+    .onChange(of: count) { old, new in
+      guard new > old, !reduceMotion else { return }
+      withAnimation(P5.pop) { bump = true }
+      Task { try? await Task.sleep(nanoseconds: 260_000_000); withAnimation(P5.pop) { bump = false } }
+    }
     // 收起时内容仍在排版（以便测量高度），但不暴露给辅助功能、不接收点击。
     .accessibilityHidden(!controller.contentVisible)
     .allowsHitTesting(controller.contentVisible)
   }
-  private func footer(_ activity: IslandActivity) -> String {
-    switch activity.phase {
-    case .paused: return "已暂停监听"
-    case .attention: return "已生成新的关注内容"
-    case .idle:
-      if let last = store.lastAnalysis { return "全部处理完毕 · 上次摘要 \(last.formatted(.dateTime.hour().minute()))" }
-      return "全部处理完毕"
-    default: return store.queueDescription
+}
+
+/// 新关注插播：红色斜横幅从左冲入、停留、从右冲出。减少动态效果时不播放。
+private struct P5CutIn: View {
+  let active: Bool
+  let definite: Bool
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
+  @State private var position: CGFloat = -1.3
+  @State private var visible = false
+  var body: some View {
+    GeometryReader { proxy in
+      if visible {
+        Text(definite ? "有人找你！" : "新的关注！")
+          .font(P5.heavy(26)).kerning(4).foregroundStyle(.white)
+          .shadow(color: .black, radius: 0, x: 3, y: 3)
+          .frame(width: proxy.size.width * 1.3, height: 60)
+          .background(P5.red)
+          .overlay(Rectangle().stroke(.black, lineWidth: 6))
+          .padding(6).background(.white)
+          .rotationEffect(.degrees(-8))
+          .position(x: proxy.size.width / 2 + position * proxy.size.width, y: proxy.size.height * 0.45)
+      }
+    }
+    .allowsHitTesting(false)
+    .accessibilityHidden(true)
+    .onChange(of: active) { _, now in if now { play() } }
+  }
+  private func play() {
+    guard !reduceMotion else { return }
+    position = -1.3
+    visible = true
+    Task { @MainActor in
+      withAnimation(.timingCurve(0.7, 0, 0.2, 1, duration: 0.26)) { position = 0 }
+      try? await Task.sleep(nanoseconds: 900_000_000)
+      withAnimation(.timingCurve(0.7, 0, 0.2, 1, duration: 0.26)) { position = 1.3 }
+      try? await Task.sleep(nanoseconds: 300_000_000)
+      visible = false
     }
   }
 }
 
-/// 群头像：按群名稳定取色，区分相邻群；与主窗口头像共用首字规则。
+/// 群头像：黑色不规则块 + 首字；悬停时变红。
 private struct NotchAvatar: View {
   let name: String
+  let hot: Bool
   var body: some View {
-    let hue = Double(name.unicodeScalars.reduce(0) { ($0 &* 31 &+ Int($1.value)) % 360 }) / 360
-    Text(String(name.prefix(1))).font(.system(size: 13, weight: .semibold))
-      .foregroundStyle(Color(hue: hue, saturation: 0.45, brightness: 1))
-      .frame(width: 30, height: 30)
-      .background(Color(hue: hue, saturation: 0.5, brightness: 0.5).opacity(0.32), in: RoundedRectangle(cornerRadius: 9))
+    Text(String(name.prefix(1))).font(P5.heavy(13.5)).foregroundStyle(.white)
+      .frame(width: 28, height: 28)
+      .background(hot ? P5.red : .black, in: P5Shard())
       .accessibilityHidden(true)
   }
 }
 
-/// 一行一个群，完整显示本群每条待关注摘要；悬停时右上角时间换成「本群已阅」，不再遮挡内容。
+/// 一个群一张歪斜白卡：默认只显示最新一条摘要，其余折叠；悬停翻黑并出现「本群已阅」，
+/// 点击后盖「已阅」印章、斜切移除。
 private struct NotchThreadRow: View {
   @Environment(AppStore.self) var store
+  @Environment(\.accessibilityReduceMotion) private var reduceMotion
   let thread: AttentionThread
+  let index: Int
   let updating: Bool
-  let separated: Bool
   let open: () -> Void
   @State private var hovering = false
+  @State private var unfolded = false
+  @State private var leaving = false
+  @State private var sweep = false
   var body: some View {
     let latest = thread.entries[0]
-    let multi = thread.entries.count > 1
-    HStack(alignment: .top, spacing: 10) {
-      NotchAvatar(name: latest.groupName)
-      VStack(alignment: .leading, spacing: 5) {
-        HStack(spacing: 6) {
-          Text(latest.groupName).font(.system(size: 12.5, weight: .semibold)).lineLimit(1)
-          if thread.pendingCount > 1 {
-            Text("\(thread.pendingCount)").font(.system(size: 10, weight: .medium).monospacedDigit())
-              .foregroundStyle(IslandColor.count).padding(.horizontal, 6).padding(.vertical, 1)
-              .background(Color.indigo.opacity(0.25), in: Capsule())
-          }
-          if updating {
+    let older = thread.entries.count - 1
+    let shown = unfolded ? thread.entries : [latest]
+    let inverted = hovering && !leaving
+    VStack(alignment: .leading, spacing: 8) {
+      HStack(spacing: 9) {
+        NotchAvatar(name: latest.groupName, hot: inverted)
+        Text(latest.groupName).font(P5.heavy(13.5)).lineLimit(1)
+        if thread.pendingCount > 1 {
+          Text("×\(thread.pendingCount)").font(P5.numeral(11)).foregroundStyle(.white)
+            .padding(.horizontal, 7).padding(.vertical, 2.5).background(P5.red, in: P5Slant(slant: 0.16))
+        }
+        if updating {
+          HStack(spacing: 4) {
+            Rectangle().fill(P5.red).frame(width: 6, height: 6).rotationEffect(.degrees(45))
+              .opacity(sweep ? 0.2 : 1)
+            Text("更新中").kerning(1)
+          }.font(P5.heavy(10)).foregroundStyle(P5.red).transition(.opacity)
+        }
+        Spacer(minLength: 4)
+        ZStack(alignment: .trailing) {
+          Text(latest.date, format: .dateTime.hour().minute()).font(P5.numeral(11))
+            .foregroundStyle(inverted ? Color(white: 0.6) : Color(white: 0.4)).opacity(inverted ? 0 : 1)
+          Button(action: markRead) {
+            Text("本群已阅").font(P5.heavy(11)).kerning(1).foregroundStyle(.white)
+              .padding(.leading, 11).padding(.trailing, 14).frame(height: 22)
+              .background(P5.red, in: P5Chevron(first: false))
+          }.buttonStyle(.plain)
+            .opacity(inverted ? 1 : 0).offset(x: inverted ? 0 : 8).allowsHitTesting(inverted)
+            .help("本群已阅，不改变微信未读").accessibilityLabel("本群已阅")
+        }.frame(height: 24)
+      }.frame(height: 28)
+      VStack(alignment: .leading, spacing: 7) {
+        ForEach(Array(shown.enumerated()), id: \.element.id) { offset, entry in
+          entryView(entry, offset: offset, inverted: inverted)
+        }
+        if older > 0 {
+          Button {
+            withAnimation(reduceMotion ? nil : P5.snap) { unfolded.toggle() }
+          } label: {
             HStack(spacing: 4) {
-              ActivityGlyph(phase: .summarizing, size: 10)
-              Text("正在更新")
-            }.font(.system(size: 10)).foregroundStyle(IslandColor.cyan)
-              .transition(.opacity)
-          }
-          Spacer(minLength: 4)
-          ZStack(alignment: .trailing) {
-            Text(latest.date, format: .dateTime.hour().minute()).font(.system(size: 10.5))
-              .foregroundStyle(.secondary).monospacedDigit().opacity(hovering ? 0 : 1)
-            Button { store.readFocusEntries(thread.entries) } label: {
-              Text("本群已阅").font(.system(size: 10.5))
-                .padding(.horizontal, 7).padding(.vertical, 2)
-                .background(Color.white.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
-            }.buttonStyle(.plain).foregroundStyle(.white.opacity(0.85))
-              .opacity(hovering ? 1 : 0).allowsHitTesting(hovering)
-              .help("本群已阅，不改变微信未读").accessibilityLabel("本群已阅")
-          }.frame(height: 18)
-        }
-        VStack(alignment: .leading, spacing: 7) {
-          ForEach(Array(thread.entries.enumerated()), id: \.element.id) { index, entry in
-            HStack(alignment: .top, spacing: 0) {
-              if multi {
-                Rectangle().fill(index == 0 ? Color.indigo.opacity(0.7) : Color.white.opacity(0.1))
-                  .frame(width: 2).padding(.trailing, 8)
-              }
-              VStack(alignment: .leading, spacing: 5) {
-                (multi ? Text(entry.date, format: .dateTime.hour().minute()).font(.system(size: 10)).foregroundColor(.secondary)
-                  + Text("  ") : Text(""))
-                  + Text(entry.preview).font(.system(size: 11.5)).foregroundColor(.white.opacity(0.84))
-                let tags = thread.tags(for: entry)
-                if !tags.isEmpty { AttentionTags(tags: tags, dark: true) }
-              }
-            }
-            .lineSpacing(3).multilineTextAlignment(.leading)
-            .fixedSize(horizontal: false, vertical: true)
-            .frame(maxWidth: .infinity, alignment: .leading)
-          }
+              Image(systemName: unfolded ? "arrowtriangle.up.fill" : "arrowtriangle.right.fill").font(.system(size: 7))
+              Text(unfolded ? "收起较早摘要" : "还有 \(older) 条较早摘要")
+            }.font(P5.heavy(10.5)).foregroundStyle(P5.red).contentShape(Rectangle())
+          }.buttonStyle(.plain)
         }
       }
     }
-    .padding(.horizontal, 8).padding(.vertical, 10)
+    .foregroundStyle(inverted ? .white : P5.ink)
+    .padding(.leading, 18).padding(.trailing, 16).padding(.vertical, 12)
+    .frame(maxWidth: .infinity, alignment: .leading)
+    .background {
+      ZStack {
+        // 红色错位阴影；悬停时加大并多一层白边。
+        P5CardShape().fill(.white).offset(x: -3, y: -3).opacity(inverted ? 1 : 0)
+        P5CardShape().fill(P5.red).offset(x: inverted ? 7 : 5, y: inverted ? 7 : 5)
+        P5CardShape().fill(inverted ? Color.black : P5.paper)
+        if updating && !reduceMotion {
+          GeometryReader { proxy in
+            LinearGradient(colors: [.clear, P5.red.opacity(0.22), .clear], startPoint: .leading, endPoint: .trailing)
+              .frame(width: proxy.size.width * 0.4)
+              .offset(x: sweep ? proxy.size.width : -proxy.size.width * 0.4)
+          }.clipShape(P5CardShape())
+        }
+      }
+      .rotationEffect(.degrees(index.isMultiple(of: 2) ? -0.5 : 0.6))
+    }
+    .overlay {
+      Text("已阅").font(P5.heavy(22)).foregroundStyle(P5.red)
+        .padding(.horizontal, 10).padding(.vertical, 4)
+        .overlay(Rectangle().stroke(P5.red, lineWidth: 3))
+        .rotationEffect(.degrees(-12))
+        .scaleEffect(leaving ? 1 : 2).opacity(leaving ? 1 : 0)
+        .allowsHitTesting(false)
+    }
+    .mask {
+      // 斜切移除：遮罩从左向右收走。
+      GeometryReader { proxy in
+        Rectangle().offset(x: leaving ? proxy.size.width + 40 : 0)
+          .animation(reduceMotion ? nil : .timingCurve(0.7, 0, 0.2, 1, duration: 0.3).delay(0.22), value: leaving)
+      }.padding(-10)
+    }
+    .offset(x: hovering && !leaving ? -4 : 0)
     .contentShape(Rectangle())
-    .background(Color.white.opacity(hovering ? 0.06 : 0), in: RoundedRectangle(cornerRadius: 12))
-    .overlay(alignment: .top) {
-      if separated && !hovering {
-        Rectangle().fill(Color.white.opacity(0.06)).frame(height: 1).padding(.leading, 48).padding(.trailing, 8)
-      }
-    }
     .onTapGesture(perform: open)
     .onHover { hovering = $0 }
-    .animation(.easeOut(duration: 0.12), value: hovering)
+    .animation(reduceMotion ? nil : .spring(duration: 0.22, bounce: 0.4), value: hovering)
+    .animation(reduceMotion ? nil : .spring(duration: 0.2, bounce: 0.5), value: leaving)
+    .onAppear { startSweep() }
+    .onChange(of: updating) { _, _ in startSweep() }
     .accessibilityElement(children: .contain)
     .accessibilityAddTraits(.isButton)
     .accessibilityLabel("\(latest.groupName)，\(thread.pendingCount) 条待关注\(updating ? "，正在更新" : "")")
     .accessibilityHint("在主窗口打开本群")
     .accessibilityAction { open() }
+    .accessibilityAction(named: "本群已阅") { markRead() }
+  }
+
+  @ViewBuilder private func entryView(_ entry: AttentionEntry, offset: Int, inverted: Bool) -> some View {
+    let tags = thread.tags(for: entry)
+    let rail = unfolded && thread.entries.count > 1
+    HStack(alignment: .top, spacing: 0) {
+      if rail {
+        Rectangle().fill(offset == 0 ? P5.red : (inverted ? Color(white: 0.35) : .black)).frame(width: 3).padding(.trailing, 9)
+      }
+      VStack(alignment: .leading, spacing: 3) {
+        if rail {
+          HStack(spacing: 6) {
+            if offset == 0 {
+              Text("NEW").font(P5.heavy(9)).kerning(1).foregroundStyle(.white)
+                .padding(.horizontal, 5).padding(.vertical, 1.5)
+                .background(inverted ? P5.red : .black, in: P5Slant(slant: 0.16)).rotationEffect(.degrees(-3))
+            }
+            Text(entry.date, format: .dateTime.hour().minute()).font(P5.numeral(10)).foregroundStyle(Color(white: 0.5))
+          }
+        }
+        Text(entry.preview).font(.system(size: 11.8))
+          .foregroundStyle(offset > 0 ? (inverted ? Color(white: 0.62) : Color(white: 0.4)) : (inverted ? Color(white: 0.93) : P5.ink))
+          .lineSpacing(3).multilineTextAlignment(.leading)
+          .fixedSize(horizontal: false, vertical: true)
+        if !tags.isEmpty { P5Tags(tags: tags, inverted: inverted).padding(.top, 3) }
+      }
+    }.frame(maxWidth: .infinity, alignment: .leading)
+  }
+
+  private func markRead() {
+    guard !leaving else { return }
+    let entries = thread.entries
+    guard !reduceMotion else { store.readFocusEntries(entries); return }
+    leaving = true
+    Task { @MainActor in
+      try? await Task.sleep(nanoseconds: 540_000_000)
+      store.readFocusEntries(entries)
+    }
+  }
+  private func startSweep() {
+    guard updating, !reduceMotion else { sweep = false; return }
+    sweep = false
+    withAnimation(.linear(duration: 1.1).repeatForever(autoreverses: false)) { sweep = true }
   }
 }

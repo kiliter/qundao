@@ -30,7 +30,6 @@ struct IslandActivity: Equatable {
   var immediateWaiting = 0
   var periodicWaiting = 0
   var retryAt: Date?
-  var pipelineVisible: Bool { phase.isActive && phase != .attention }
 }
 
 extension AppStore {
