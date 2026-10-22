@@ -99,7 +99,10 @@ final class AttentionFeedTests: XCTestCase {
     for account in ["a", "b"] {
       let entries = AttentionFeed.entries(attentions: responses, digests: summaries,
                                           account: account, includeHistory: true)
-      XCTAssertEqual(entries.count, 2)
+      // 提醒消息在摘要证据内，并入摘要作为标签，不单独成条。
+      XCTAssertEqual(entries.count, 1)
+      let threads = AttentionFeed.threads(attentions: responses, digests: summaries, account: account, includeHistory: true)
+      XCTAssertEqual(threads.first?.tags.values.flatMap { $0 }.map(\.message.accountID), [account])
       for entry in entries {
         switch entry {
         case .response(let item): XCTAssertEqual(item.message.accountID, account)
@@ -114,10 +117,10 @@ final class AttentionFeedTests: XCTestCase {
     let summary = digest()
     let response = attention()
     let entries = AttentionFeed.entries(attentions: [response, response], digests: [summary, summary], account: "a")
-    XCTAssertEqual(entries.count, 2)
-    XCTAssertEqual(Set(entries.map(\.id)).count, 2)
-    XCTAssertEqual(entries.filter(\.isResponse).count, 1)
+    XCTAssertEqual(entries.count, 1)
     XCTAssertEqual(entries.filter { !$0.isResponse }.count, 1)
+    let thread = AttentionFeed.threads(attentions: [response, response], digests: [summary, summary], account: "a").first
+    XCTAssertEqual(thread?.tags(for: entries[0]).count, 1, "重复提醒只并入一次")
   }
 
   func testReadingRelatedSummaryDoesNotResolveResponseFromSameMessage() {
@@ -140,7 +143,9 @@ final class AttentionFeedTests: XCTestCase {
     let history = AttentionFeed.threads(attentions: state.attentions, digests: state.digests,
                                         account: "a", includeHistory: true)
     let group = try XCTUnwrap(history.first)
-    XCTAssertEqual(group.entries.count, 2)
+    // 同一消息的已处理提醒并入已阅摘要作为标签。
+    XCTAssertEqual(group.entries.count, 1)
+    XCTAssertEqual(group.tags.values.flatMap { $0 }.count, 1)
     XCTAssertEqual(group.pendingCount, 0, "历史已阅群不能因为微信还有未读而亮点")
     XCTAssertEqual(state.groups[0].unread, 5)
     XCTAssertTrue(AttentionFeed.threads(attentions: state.attentions, digests: state.digests,
@@ -158,8 +163,9 @@ final class AttentionFeedTests: XCTestCase {
       let rows = AttentionFeed.threads(attentions: responses, digests: digests,
                                        account: "a", includeHistory: includeHistory)
       let group = try XCTUnwrap(rows.first { $0.id == "g" })
-      XCTAssertEqual(group.pendingCount, 2)
-      XCTAssertEqual(group.entries.count, includeHistory ? 4 : 2)
+      // 待阅提醒并入待阅摘要：同一件事只计一次。
+      XCTAssertEqual(group.pendingCount, 1)
+      XCTAssertEqual(group.entries.count, includeHistory ? 3 : 1, "证据外的已处理提醒在历史中单独成条")
       XCTAssertEqual(rows.first { $0.id == "history-only" }?.pendingCount, includeHistory ? 0 : nil)
       let pending = AttentionFeed.entries(attentions: responses, digests: digests, account: "a")
       XCTAssertEqual(rows.reduce(0) { $0 + $1.pendingCount }, pending.count,
@@ -175,18 +181,22 @@ final class AttentionFeedTests: XCTestCase {
     let summaries = [summary, summary, digest(account: "b")]
     let a = try XCTUnwrap(AttentionFeed.threads(attentions: responses, digests: summaries,
                                                 account: "a", includeHistory: true).first)
-    XCTAssertEqual(a.entries.count, 3)
-    XCTAssertEqual(a.pendingCount, 2, "稍后提醒及重复记录不增加小点计数")
+    XCTAssertEqual(a.entries.count, 2, "证据内的提醒并入摘要标签，证据外的稍后提醒单独成条")
+    XCTAssertEqual(a.pendingCount, 1, "稍后提醒及重复记录不增加小点计数")
     let b = try XCTUnwrap(AttentionFeed.threads(attentions: responses, digests: summaries,
                                                 account: "b", includeHistory: true).first)
-    XCTAssertEqual(b.pendingCount, 2)
+    XCTAssertEqual(b.pendingCount, 1)
     XCTAssertTrue(AttentionFeed.threads(attentions: responses, digests: summaries,
                                         account: "c", includeHistory: true).isEmpty)
-    snoozed.status = "pending"
-    snoozed.remindAt = nil
-    let due = try XCTUnwrap(AttentionFeed.threads(attentions: [response, snoozed], digests: [summary],
+    // 证据外的稍后提醒到期后单独成条并重新计入。
+    var outside = Attention(message: message(id: "M9"), groupName: "办公群", title: "请确认", reason: "明确提及", definite: true)
+    outside.status = "snoozed"
+    let before = try XCTUnwrap(AttentionFeed.threads(attentions: [response, outside], digests: [summary],
+                                                     account: "a", includeHistory: true).first)
+    outside.status = "pending"
+    let due = try XCTUnwrap(AttentionFeed.threads(attentions: [response, outside], digests: [summary],
                                                   account: "a", includeHistory: true).first)
-    XCTAssertEqual(due.pendingCount, 3, "稍后提醒到期恢复待关注后应重新计入小点")
+    XCTAssertEqual(due.pendingCount, before.pendingCount + 1, "稍后提醒到期恢复待关注后应重新计入小点")
   }
 
   func testOneClickViewedClearsBadgesAfterRestartAndNewSummaryRestoresOne() throws {
@@ -207,7 +217,7 @@ final class AttentionFeedTests: XCTestCase {
     XCTAssertTrue(history.allSatisfy { $0.pendingCount == 0 })
     XCTAssertEqual(restored.groups[0].unread, 5)
     XCTAssertEqual(AttentionFeed.threads(attentions: restored.attentions, digests: restored.digests,
-                                        account: "b", includeHistory: true).first?.pendingCount, 2)
+                                        account: "b", includeHistory: true).first?.pendingCount, 1)
     restored.digests.append(digest())
     let updated = AttentionFeed.threads(attentions: restored.attentions, digests: restored.digests,
                                         account: "a", includeHistory: true)

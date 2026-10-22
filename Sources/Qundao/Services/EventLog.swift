@@ -9,9 +9,13 @@ final class EventLog: @unchecked Sendable {
   ].appendingPathComponent("Qundao/Logs", isDirectory: true)
   let diagnostics = DiagnosticLogStore(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
     .appendingPathComponent("Qundao/Logs/Diagnostics", isDirectory: true))
+  /// 日志写入（含 fsync）放到串行队列，保持顺序且不阻塞主线程界面与动画。
+  private let queue = DispatchQueue(label: "qundao.eventlog", qos: .utility)
   func record(_ item: DiagnosticRecord) {
-    do { try diagnostics.append(item) }
-    catch { NSLog("群岛诊断日志写入失败：%@", error.localizedDescription) }
+    queue.async { [diagnostics] in
+      do { try diagnostics.append(item) }
+      catch { NSLog("群岛诊断日志写入失败：%@", error.localizedDescription) }
+    }
   }
   func localDecision(_ message: Message, preferences: Preferences, selfID: String,
                      match: RuleMatch, semantic: Bool, action: String, elapsed: TimeInterval) {
@@ -39,12 +43,16 @@ final class EventLog: @unchecked Sendable {
   }()
   func write(_ level: String = "信息", _ event: String, _ detail: String = "") {
     record(DiagnosticRecord(category: .runtime, event: event, output: detail, error: level == "错误" ? detail : ""))
+    let date = Date()
+    queue.async { [self] in appendEvent(level, event, detail, date: date) }
+  }
+  private func appendEvent(_ level: String, _ event: String, _ detail: String, date: Date) {
     lock.lock()
     defer { lock.unlock() }
     do {
       try FileManager.default.createDirectory(
         at: directory, withIntermediateDirectories: true, attributes: [.posixPermissions: 0o700])
-      let stamp = formatter.string(from: Date())
+      let stamp = formatter.string(from: date)
       let day = DateFormatter()
       day.dateFormat = "yyyy-MM-dd"
       day.locale = Locale(identifier: "en_US_POSIX")

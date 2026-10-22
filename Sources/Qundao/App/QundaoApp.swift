@@ -4,21 +4,22 @@ import UserNotifications
 
 @main struct QundaoApp: App {
   @NSApplicationDelegateAdaptor(AppDelegate.self) var delegate
-  @StateObject private var store = AppStore.shared
+  @State private var store = AppStore.shared
   var body: some Scene {
     WindowGroup("群岛", id: "main") {
-      ContentView().environmentObject(store).background(WindowReader()).onAppear {
+      ContentView().environment(store).background(WindowReader()).onAppear {
         AppDelegate.shared?.captureWindow()
       }
     }.defaultSize(width: 1100, height: 760).commands {
       CommandGroup(replacing: .newItem) {}
       CommandGroup(after: .appInfo) {
         Button("打开主窗口") { delegate.showMain() }.keyboardShortcut("o")
-        Button("显示刘海") { NotchController.shared?.expand(pin: true) }.keyboardShortcut(
+        // 再按一次收起，便于键盘操作。
+        Button("显示 / 收起刘海") { NotchController.shared?.toggle() }.keyboardShortcut(
           "i", modifiers: [.command, .shift])
       }
     }
-    Settings { ContentView().environmentObject(store) }
+    Settings { ContentView().environment(store) }
     MenuBarExtra {
       Button("打开主窗口") { delegate.showMain() }
       Button("查看需要关注") { NotchController.shared?.expand(pin: true) }
@@ -61,6 +62,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
       Task { @MainActor in await AppStore.shared.refreshGroupStates() }
     }
     NSApp.activate(ignoringOtherApps: true)
+    PerfBenchmark.run(store: AppStore.shared)
     Task {
       let store = AppStore.shared
       await store.loadCredentials()
@@ -97,7 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     AppStore.shared.stopGroupStateRefresh()
     AppStore.shared.stop()
-    AppStore.shared.save()
+    AppStore.shared.saveNow()
     EventLog.shared.write("信息", "应用退出")
   }
   nonisolated func userNotificationCenter(

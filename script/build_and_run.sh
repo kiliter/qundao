@@ -11,8 +11,11 @@ SIGN_IDENTITY="${QUNDAO_SIGNING_IDENTITY:-D01BDF064D9EDF0FBA392837F0A22632515F7F
 if [[ "$MODE" != "--build-only" ]]; then
   /usr/bin/pkill -x "$APP_NAME" >/dev/null 2>&1 || true
 fi
-swift build --scratch-path .build
-BUILD_DIR="$(swift build --scratch-path .build --show-bin-path)"
+# 安装包默认用 Release（开启编译优化，SwiftUI 渲染明显更快）；--debug 才用 Debug 以便 lldb 调试。
+CONFIG="release"
+if [[ "$MODE" == "--debug" ]]; then CONFIG="debug"; fi
+swift build -c "$CONFIG" --scratch-path .build
+BUILD_DIR="$(swift build -c "$CONFIG" --scratch-path .build --show-bin-path)"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
 if [[ -f "$ROOT_DIR/Resources/AppIcon.icns" ]]; then cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/"; fi

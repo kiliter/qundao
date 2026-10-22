@@ -50,6 +50,7 @@ struct ConversationBrowser<Detail: View>: View {
     rows.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
   }
   var body: some View {
+    let filtered = self.filtered
     HSplitView {
       VStack(spacing: 0) {
         SearchBox(placeholder: compact ? "群聊" : "搜索群聊", text: $search).padding(compact ? 6 : 12)
@@ -82,7 +83,8 @@ struct ConversationBrowser<Detail: View>: View {
                         .accessibilityLabel("微信未读状态尚未同步")
                     }
                   }
-                  Text(row.preview.replacingOccurrences(of: "\n", with: " "))
+                  // 单行预览只取开头，避免整段长摘要参与排版。
+                  Text(String(row.preview.prefix(140)).replacingOccurrences(of: "\n", with: " "))
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
                   HStack {
                     if row.related {
@@ -111,17 +113,17 @@ struct ConversationBrowser<Detail: View>: View {
         }
       }.frame(minWidth: compact ? 195 : 400, maxWidth: .infinity, maxHeight: .infinity)
     }
-    .onAppear { reconcile() }
-    .onChange(of: filtered.map(\.id)) { _, _ in reconcile() }
+    .onAppear { reconcile(filtered) }
+    .onChange(of: filtered.map(\.id)) { _, ids in reconcile(filtered) }
   }
-  private func reconcile() {
+  private func reconcile(_ filtered: [ConversationRow]) {
     if !filtered.contains(where: { $0.id == selection }) { selection = filtered.first?.id }
   }
 }
 
 /// 未读状态由 Alpha 提供，与相关性、摘要批数和关注处理状态分别展示。
 struct GroupReadSyncStatus: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   var compact = false
   private var status: String {
     if store.groupStatesRefreshing { return "正在同步 Alpha 未读…" }

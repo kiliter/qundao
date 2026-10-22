@@ -2,18 +2,23 @@ import QundaoCore
 import SwiftUI
 
 struct GroupsPage: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @State private var search = ""
   @State private var selection: Set<String> = []
   @State private var sortOrder = [KeyPathComparator(\ChatGroup.name)]
   @State private var adding = false
   private var groups: [ChatGroup] {
-    store.snapshot.groups.filter {
+    store.groups.filter {
       store.preferences.selectedGroups.contains($0.id)
         && (search.isEmpty || $0.name.localizedCaseInsensitiveContains(search))
     }.sorted(using: sortOrder)
   }
   var body: some View {
+    let groups = self.groups
+    // 每组最近摘要时间一次算好，避免每行都过滤排序全部摘要。
+    let latest = store.digests.reduce(into: [String: Date]()) { map, digest in
+      if map[digest.groupID] == nil { map[digest.groupID] = digest.date }
+    }
     VStack(spacing: 0) {
       HStack(alignment: .top, spacing: 20) {
         VStack(alignment: .leading, spacing: 6) {
@@ -49,8 +54,8 @@ struct GroupsPage: View {
           Label("已开启", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
         }.width(85)
         TableColumn("最近摘要") { group in
-          if let digest = store.digests.first(where: { $0.groupID == group.id }) {
-            Text(digest.date, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
+          if let date = latest[group.id] {
+            Text(date, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
           } else { Text("暂无").font(.caption).foregroundStyle(.tertiary) }
         }.width(min: 100, ideal: 130)
       }
@@ -72,19 +77,19 @@ struct GroupsPage: View {
         Text("支持 ⌘ / ⇧ 多选")
       }.font(.caption2).foregroundStyle(.secondary).padding(14)
     }
-    .sheet(isPresented: $adding) { AddGroupsSheet().environmentObject(store) }
+    .sheet(isPresented: $adding) { AddGroupsSheet().environment(store) }
     .onChange(of: groups.map(\.id)) { _, ids in selection.formIntersection(ids) }
   }
 }
 
 private struct AddGroupsSheet: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @Environment(\.dismiss) private var dismiss
   @State private var search = ""
   @State private var selected: Set<String> = []
   private var results: [ChatGroup] {
     let query = search.trimmingCharacters(in: .whitespacesAndNewlines)
-    return store.snapshot.groups.filter {
+    return store.groups.filter {
       !store.preferences.selectedGroups.contains($0.id) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query))
     }.sorted { $0.name.localizedStandardCompare($1.name) == .orderedAscending }
   }
@@ -119,7 +124,7 @@ private struct AddGroupsSheet: View {
         if results.isEmpty {
           ContentUnavailableView(search.isEmpty ? "暂无可添加的群聊" : "没有匹配的群聊",
             systemImage: "magnifyingglass",
-            description: Text(store.snapshot.groups.isEmpty ? "请先连接 Alpha 或刷新群列表。" : "已加入白名单的群不会重复显示。"))
+            description: Text(store.groups.isEmpty ? "请先连接 Alpha 或刷新群列表。" : "已加入白名单的群不会重复显示。"))
         }
       }
       HStack {
@@ -132,6 +137,6 @@ private struct AddGroupsSheet: View {
         }.buttonStyle(.borderedProminent).disabled(selected.isEmpty).keyboardShortcut(.defaultAction)
       }
     }.padding(22).frame(width: 640, height: 500)
-      .onChange(of: store.snapshot.groups.map(\.id)) { _, ids in selected.formIntersection(ids) }
+      .onChange(of: store.groups.map(\.id)) { _, ids in selected.formIntersection(ids) }
   }
 }

@@ -58,6 +58,23 @@ private func validResult(_ text: String = "完整摘要") -> AIResult {
     await settle { coordinator.active.isEmpty }
     XCTAssertEqual(modelCalls, 1)
   }
+  func testBatchedScanPersistsAndNotifiesOnce() {
+    var saves = 0, notifications = 0, persisted = SummaryState()
+    let coordinator = SummaryCoordinator(load: { scope in UnreadSnapshot(scope: scope, groupName: "群", messages: []) },
+      summarize: { _ in validResult() }, persist: { state, _ in saves += 1; persisted = state })
+    coordinator.changed = { notifications += 1 }
+    coordinator.batch {
+      for index in 0..<30 {
+        coordinator.consider(ConversationScope(account: "a", group: "g\(index)"),
+                             head: UnreadHead(count: 1, lastID: "M\(index)", timestamp: 1))
+      }
+      coordinator.consider(ConversationScope(account: "a", group: "empty"), head: nil)
+    }
+    XCTAssertEqual(saves, 1); XCTAssertEqual(notifications, 1)
+    XCTAssertEqual(persisted.jobs.count, 30)
+    coordinator.batch { coordinator.consider(scope, head: nil) }
+    XCTAssertEqual(saves, 1, "无变化的批次不应写盘")
+  }
   func testM100ThenM101IncludesAllOldUnreadAndPeriodicSkipsSameTail() async throws {
     var unread = (1...100).map { msg($0) }, calls: [[String]] = [], persisted = SummaryState()
     let coordinator = SummaryCoordinator(load: { scope in UnreadSnapshot(scope: scope, groupName: "群", messages: unread) },

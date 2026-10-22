@@ -1,46 +1,93 @@
 import AppKit
-import Combine
+import Observation
 import Foundation
 import QundaoCore
 import UserNotifications
 
-@MainActor final class AppStore: ObservableObject {
+@MainActor @Observable final class AppStore {
   static let shared = AppStore()
-  @Published var snapshot = AppSnapshot()
-  @Published var accounts: [Account] = []
-  @Published var models: [CatalogModel] = []
-  @Published var page: Page = .attention
-  @Published var status = "尚未连接 Alpha"
-  @Published var streamStatus = "尚未启动"
-  @Published var error: String?
-  @Published var running = false
-  @Published var syncing = false
-  @Published var analyzing = false
-  @Published var lastSync: Date?
-  @Published private(set) var groupStatesLastSync: Date?
-  @Published private(set) var groupStatesError: String?
-  @Published private(set) var groupStatesRefreshing = false
-  @Published var lastAnalysis: Date?
-  @Published var detail: Attention?
-  @Published var summaryGroupID: String?
-  @Published var decisionStatus = "本地识别"
-  @Published var busy = false
-  @Published var loadingCredentials = false
-  @Published var queueDescription = "分析队列空闲"
-  var onAttention: (() -> Void)?
-  var alphaToken = "", cpaKey = "", jevKey = ""
-  lazy var jevMonitor = JevMonitor(store: self)
-  let disk = DiskStore(), log = EventLog.shared, semantic = SemanticFilter()
-  private var pollTask: Task<Void, Never>?, streamTask: Task<Void, Never>?,
-    worker: Task<Void, Never>?, pendingRefresh: Task<Void, Never>?, periodicTask: Task<Void, Never>?, scanTask: Task<Void, Never>?
-  private var persistenceHealthy = true
-  private var generation = UUID()
-  private var groupRefreshTask: Task<Void, Never>?
-  private var connectionRequest: UUID?
-  private var syncRequest: UUID?
-  private var catalogLoading = false
-  private var periodicClock = PeriodicSummaryClock()
-  private lazy var groupStates = {
+  /// 快照本身不参与观察：任何字段（检查点、缓冲、去重集合）变化都会触发整树刷新。
+  /// 改为按界面实际使用的分片比较，只有对应分片真正变化才通知读取它的视图。
+  @ObservationIgnored var snapshot = AppSnapshot() { didSet { snapshotChanged(from: oldValue) } }
+  private(set) var groupsRevision: UInt64 = 0
+  private(set) var digestsRevision: UInt64 = 0
+  private(set) var attentionsRevision: UInt64 = 0
+  private(set) var messagesRevision: UInt64 = 0
+  private(set) var preferencesRevision: UInt64 = 0
+  /// 群聊摘要页分组结果缓存，键为是否只看相关。
+  @ObservationIgnored var summaryThreadCache: [Bool: (account: String, synced: Bool, threads: [SummaryThread])] = [:]
+  /// 待关注记录在每次视图刷新时会被多处读取，按快照缓存，避免重复过滤排序。
+  @ObservationIgnored var attentionCache: (account: String, entries: [AttentionEntry], threads: [AttentionThread])?
+  @ObservationIgnored private var digestCache: (account: String, digests: [Digest])?
+  var accounts: [Account] = []
+  var models: [CatalogModel] = []
+  var page: Page = .attention
+  var status = "尚未连接 Alpha"
+  var streamStatus = "尚未启动"
+  var error: String?
+  var running = false
+  var syncing = false
+  var analyzing = false
+  var lastSync: Date?
+  private(set) var groupStatesLastSync: Date?
+  /// 是否已至少同步过一次 Alpha 未读；只在首次同步时变化，避免每 5 秒刷新摘要列表。
+  private(set) var groupStatesSynced = false
+  private(set) var groupStatesError: String?
+  private(set) var groupStatesRefreshing = false
+  var lastAnalysis: Date?
+  var detail: Attention?
+  /// 刘海点击后主窗口需要关注页选中的群。
+  var attentionGroupID: String?
+  var summaryGroupID: String?
+  var decisionStatus = "本地识别"
+  var busy = false
+  var loadingCredentials = false
+  var queueDescription = "分析队列空闲"
+  /// 刘海处理阶段概况；由工作循环与调度变化刷新，值不变不写。
+  var activity = IslandActivity()
+  @ObservationIgnored var summaryProgress: [String: SummaryProgress] = [:]
+  /// 正在 Jev 判断的群 ID。
+  @ObservationIgnored var jevJudging: String?
+  @ObservationIgnored var attentionFlashAt: Date?
+  @ObservationIgnored var onAttention: (() -> Void)?
+  @ObservationIgnored var alphaToken = ""
+  @ObservationIgnored var cpaKey = ""
+  @ObservationIgnored var jevKey = ""
+  @ObservationIgnored lazy var jevMonitor = JevMonitor(store: self)
+  @ObservationIgnored let disk = DiskStore()
+  @ObservationIgnored let log = EventLog.shared
+  @ObservationIgnored let semantic = SemanticFilter()
+  @ObservationIgnored private var pollTask: Task<Void, Never>?
+  @ObservationIgnored private var streamTask: Task<Void, Never>?
+  @ObservationIgnored private var worker: Task<Void, Never>?
+  @ObservationIgnored private var pendingRefresh: Task<Void, Never>?
+  @ObservationIgnored private var periodicTask: Task<Void, Never>?
+  @ObservationIgnored private var scanTask: Task<Void, Never>?
+  @ObservationIgnored private var persistenceHealthy = true
+  @ObservationIgnored private var generation = UUID()
+  @ObservationIgnored private var groupRefreshTask: Task<Void, Never>?
+  @ObservationIgnored private var connectionRequest: UUID?
+  @ObservationIgnored private var syncRequest: UUID?
+  @ObservationIgnored private var catalogLoading = false
+  @ObservationIgnored private var periodicClock = PeriodicSummaryClock()
+  /// 数组相等比较对未修改的共享存储是 O(1)，因此每次快照写入的检查开销很小。
+  private func snapshotChanged(from old: AppSnapshot) {
+    let groups = old.groups != snapshot.groups, digests = old.digests != snapshot.digests
+    let attentions = old.attentions != snapshot.attentions, prefs = old.preferences != snapshot.preferences
+    if groups { groupsRevision &+= 1 }
+    if digests { digestsRevision &+= 1; digestCache = nil }
+    if attentions { attentionsRevision &+= 1 }
+    if old.messages != snapshot.messages { messagesRevision &+= 1 }
+    if prefs { preferencesRevision &+= 1; digestCache = nil }
+    if digests || attentions || prefs { attentionCache = nil }
+    if groups || digests || prefs { summaryThreadCache = [:] }
+  }
+  /// 视图只能通过以下访问器读取快照内容，以便登记对应分片的依赖。
+  var groups: [ChatGroup] { _ = groupsRevision; return snapshot.groups }
+  var allDigests: [Digest] { _ = digestsRevision; return snapshot.digests }
+  var allAttentions: [Attention] { _ = attentionsRevision; return snapshot.attentions }
+  var cachedMessages: [Message] { _ = messagesRevision; return snapshot.messages }
+  @ObservationIgnored private lazy var groupStates = {
     let synchronizer = GroupStateSynchronizer(account: preferences.accountID, cachedGroups: snapshot.groups,
       load: { [weak self] account in
         guard let self, self.preferences.accountID == account, !self.alphaToken.isEmpty else { throw CancellationError() }
@@ -51,10 +98,12 @@ import UserNotifications
       let previousSync = self.groupStatesLastSync
       let previousError = self.groupStatesError
       let groupsChanged = self.snapshot.groups != state.groups
-      self.snapshot.groups = state.groups
-      self.groupStatesLastSync = state.lastSync
-      self.groupStatesError = state.error
-      self.groupStatesRefreshing = state.refreshing
+      // 每 5 秒同步一次；值不变时不写，避免无谓地通知界面。
+      if groupsChanged { self.snapshot.groups = state.groups }
+      if previousSync != state.lastSync { self.groupStatesLastSync = state.lastSync }
+      if self.groupStatesSynced != (state.lastSync != nil) { self.groupStatesSynced = state.lastSync != nil }
+      if previousError != state.error { self.groupStatesError = state.error }
+      if self.groupStatesRefreshing != state.refreshing { self.groupStatesRefreshing = state.refreshing }
       if state.lastSync != previousSync, state.lastSync != nil {
         if groupsChanged { self.save() }
         if previousSync == nil || groupsChanged || previousError != nil {
@@ -66,12 +115,14 @@ import UserNotifications
     }
     return synchronizer
   }()
-  lazy var summaries: SummaryCoordinator = {
+  @ObservationIgnored lazy var summaries: SummaryCoordinator = {
     let coordinator = SummaryCoordinator(state: snapshot.summaryState ?? SummaryState(),
       load: { [weak self] scope in
         guard let self, self.messageAdmission.allows(scope) else { throw CancellationError() }
+        self.summaryStarted(scope)
         let snapshot = try await UnreadSnapshotLoader(source: AlphaClient(token: self.alphaToken)).load(scope)
         guard self.messageAdmission.allows(scope) else { throw CancellationError() }
+        self.summaryLoaded(snapshot)
         return snapshot
       }, summarize: { [weak self] snapshot in
         guard let self else { throw CancellationError() }
@@ -89,7 +140,7 @@ import UserNotifications
     coordinator.changed = { [weak self] in self?.refreshQueueStatus() }
     return coordinator
   }()
-  var preferences: Preferences { snapshot.preferences }
+  var preferences: Preferences { _ = preferencesRevision; return snapshot.preferences }
   var messageAdmission: MessageAdmission { MessageAdmission(account: preferences.accountID, groups: preferences.selectedGroups) }
   var activeAccount: Account? { accounts.first { $0.id == preferences.accountID } }
   var pending: [Attention] {
@@ -98,14 +149,19 @@ import UserNotifications
     }.sorted { $0.message.timestamp > $1.message.timestamp }
   }
   var digests: [Digest] {
-    snapshot.digests.filter { $0.accountID == preferences.accountID }.sorted { $0.date > $1.date }
+    _ = digestsRevision
+    let account = preferences.accountID
+    if let cache = digestCache, cache.account == account { return cache.digests }
+    let value = snapshot.digests.filter { $0.accountID == account }.sorted { $0.date > $1.date }
+    digestCache = (account, value)
+    return value
   }
   var relevantDigests: [Digest] { digests.filter(\.related) }
   var isQuiet: Bool { (preferences.dndUntil ?? .distantPast) > Date() }
   var configured: Bool { !alphaToken.isEmpty && !preferences.accountID.isEmpty }
   func groupUnreadCount(_ groupID: String) -> Int? {
-    guard groupStatesLastSync != nil else { return nil }
-    return snapshot.groups.first(where: { $0.id == groupID }).map { max(0, $0.unread) }
+    guard groupStatesSynced else { return nil }
+    return groups.first(where: { $0.id == groupID }).map { max(0, $0.unread) }
   }
 
   /// 只读同步 Alpha 会话状态，不读取消息，也不触发摘要；暂停监听时仍可调用。
@@ -147,35 +203,110 @@ import UserNotifications
       _ = snapshot.migrateWhitelist()
       snapshot.migrateSummaryWorkflow()
       snapshot.migrateAlphaREST()
+      let covered = snapshot.migrateDigestCoverage()
+      if covered > 0 { log.write("信息", "旧摘要覆盖关系已补算", "\(covered) 条旧摘要被同群较新摘要完整覆盖，不再待阅；历史保留") }
       snapshot.discardExcludedProcessing(admission: messageAdmission)
       save()
     }
     log.write("信息", "应用启动", "本地语义筛选：\(semantic.available ? "可用":"不可用，使用称呼及关键词筛选")")
   }
+  /// 配置文件 ~/.config/qundao/config.toml 是密钥与模型/规则配置的唯一来源；
+  /// 不存在时从旧版钥匙串一次性迁移，之后不再访问钥匙串，避免重签后反复弹出授权。
+  @ObservationIgnored let configFile = AppConfigFile()
+  @ObservationIgnored private var configWatcher: ConfigWatcher?
+  /// 最近一次与文件一致的配置；按语义比较，避免改写用户手写的注释与格式。
+  @ObservationIgnored private var lastConfig: AppConfig?
   func loadCredentials() async {
     guard !loadingCredentials else { return }
     loadingCredentials = true
-    status = "正在读取钥匙串；如有系统授权提示请手动完成"
-    // 钥匙串可能等待系统授权，不得在 AppStore 初始化或主线程中阻塞界面。
-    let values = await Task.detached(priority: .userInitiated) {
-      (KeychainStore.get("alpha"), KeychainStore.get("cpa"), KeychainStore.get("jev"))
-    }.value
-    alphaToken = values.0; cpaKey = values.1; jevKey = values.2
-    if !jevKey.isEmpty, snapshot.preferences.jevBaseURL == nil {
-      snapshot.preferences.jevBaseURL = JevConfiguration.typeSafe.baseURL
-      snapshot.preferences.jevAPI = .systemOne
-      snapshot.preferences.jevModel = snapshot.preferences.jevModel ?? JevConfiguration.typeSafe.model
-      save()
+    defer { loadingCredentials = false }
+    if configFile.exists {
+      reloadConfig(initial: true)
+    } else {
+      status = "正在从钥匙串迁移到配置文件；如有系统授权提示请手动完成"
+      // 钥匙串可能等待系统授权，不得在主线程中阻塞界面。
+      let values = await Task.detached(priority: .userInitiated) {
+        (KeychainStore.get("alpha"), KeychainStore.get("cpa"), KeychainStore.get("jev"))
+      }.value
+      alphaToken = values.0; cpaKey = values.1; jevKey = values.2
+      if !jevKey.isEmpty, snapshot.preferences.jevBaseURL == nil {
+        snapshot.preferences.jevBaseURL = JevConfiguration.typeSafe.baseURL
+        snapshot.preferences.jevAPI = .systemOne
+        snapshot.preferences.jevModel = snapshot.preferences.jevModel ?? JevConfiguration.typeSafe.model
+      }
+      do {
+        try writeConfig()
+        log.write("信息", "配置已迁移到配置文件", configFile.url.path)
+      } catch {
+        self.error = "配置文件创建失败：\(error.localizedDescription)"
+        log.write("错误", "配置文件创建失败", error.localizedDescription)
+      }
     }
-    loadingCredentials = false
-    status = alphaToken.isEmpty ? "请配置 Alpha 访问令牌" : "凭据已载入"
+    status = alphaToken.isEmpty ? "请在 \(configFile.url.path) 或连接设置中配置 Alpha 访问令牌" : "凭据已载入"
     ensureGroupStateRefresh()
+    configWatcher = ConfigWatcher(url: configFile.url) { [weak self] in self?.reloadConfig(initial: false) }
   }
+  /// 读取配置文件并应用；格式错误时保留当前配置并提示，不清空密钥。
+  func reloadConfig(initial: Bool) {
+    guard let text = try? String(contentsOf: configFile.url, encoding: .utf8) else { return }
+    let config: AppConfig
+    do { config = try AppConfig.parse(text) } catch {
+      self.error = "配置文件格式错误，已保留当前配置：\(error.localizedDescription)"
+      log.write("警告", "配置文件格式错误", error.localizedDescription)
+      return
+    }
+    if error?.hasPrefix("配置文件格式错误") == true { error = nil }
+    guard config != lastConfig else { return }
+    lastConfig = config
+    let oldAlpha = alphaToken, oldPrefs = preferences, oldJev = jevKey
+    alphaToken = config.alphaToken; cpaKey = config.cpaKey; jevKey = config.jevKey
+    config.apply(to: &snapshot.preferences)
+    save()
+    if initial { return }
+    log.write("信息", "配置文件已重新加载")
+    if oldAlpha != alphaToken {
+      groupStates.reset(account: preferences.accountID, cachedGroups: snapshot.groups)
+      ensureGroupStateRefresh()
+      if running { start() }
+    }
+    if running && (oldJev != jevKey || oldPrefs.decisionMethod != preferences.decisionMethod
+      || oldPrefs.decisionThreshold != preferences.decisionThreshold
+      || oldPrefs.jevConfiguration != preferences.jevConfiguration) { jevMonitor.start() }
+  }
+  /// 把当前密钥和偏好写回配置文件；内容未变时不写。
+  func writeConfig() throws {
+    let config = AppConfig(preferences: preferences, alpha: alphaToken, cpa: cpaKey, jev: jevKey)
+    guard config != lastConfig else { return }
+    try configFile.save(config)
+    lastConfig = config
+  }
+  @ObservationIgnored private var pendingSave: Task<Void, Never>?
+  /// 普通保存（补查进度、缓冲、偏好等）合并到 250ms 后一次写入，补查一轮从每页一次降为少数几次。
+  /// 摘要结果与成功标记、已阅状态走 persistSummary / setViewed 的同步原子写入，不经过这里。
+  /// 合并期间若进程崩溃，只会回到上一次一致的快照并重新补查，不会推进任何成功标记。
   func save() {
+    guard persistenceHealthy, pendingSave == nil else { return }
+    pendingSave = Task { [weak self] in
+      try? await Task.sleep(nanoseconds: 250_000_000)
+      guard let self else { return }
+      self.pendingSave = nil
+      self.saveNow()
+    }
+  }
+  /// 立即保存；退出应用时调用。
+  func saveNow() {
+    pendingSave?.cancel(); pendingSave = nil
     guard persistenceHealthy else { return }
     // 即使前一次待办落盘失败，之后保存偏好/缓冲时也必须带上内存中的最新任务。
-    snapshot.summaryState = summaries.state
-    do { try disk.save(snapshot) } catch {
+    var persisted = snapshot
+    persisted.summaryState = summaries.state
+    if lastConfig != nil {
+      do { try writeConfig() } catch {
+        self.error = "配置文件保存失败：\(error.localizedDescription)"
+        log.write("错误", "配置文件保存失败", error.localizedDescription)
+      }
+    }
+    do { try disk.save(persisted) } catch {
       self.error = "本地状态保存失败：\(error.localizedDescription)"
       log.write("错误", "状态保存失败")
     }
@@ -189,12 +320,17 @@ import UserNotifications
   }
   func saveDecisionConnection(_ config: JevConfiguration, key: String) throws {
     _ = try config.endpoint()
-    try KeychainStore.set(key, account: "jev")
     jevMonitor.stop()
+    let oldKey = jevKey, oldPrefs = snapshot.preferences
     jevKey = key
     snapshot.preferences.jevBaseURL = config.baseURL
     snapshot.preferences.jevAPI = config.api
     snapshot.preferences.jevModel = config.model
+    do { try writeConfig() } catch {
+      jevKey = oldKey; snapshot.preferences = oldPrefs
+      if running { jevMonitor.start() }
+      throw error
+    }
     save()
     if running { jevMonitor.start() }
     log.write("信息", "决策服务配置已保存")
@@ -210,10 +346,9 @@ import UserNotifications
   }
   func saveCredentials(alpha: String, cpa: String) {
     do {
-      try KeychainStore.set(alpha, account: "alpha")
-      try KeychainStore.set(cpa, account: "cpa")
       alphaToken = alpha
       cpaKey = cpa
+      try writeConfig()
       // 连接信息变化后，之前正在读取的响应不能覆盖新连接的状态。
       groupStates.reset(account: preferences.accountID, cachedGroups: snapshot.groups)
       ensureGroupStateRefresh()
@@ -222,7 +357,7 @@ import UserNotifications
       log.write("信息", "连接配置已保存")
     } catch {
       self.error = error.localizedDescription
-      log.write("错误", "钥匙串保存失败")
+      log.write("错误", "连接配置保存失败")
     }
   }
   func connect() async {
@@ -344,6 +479,7 @@ import UserNotifications
         if self.preferences.aiEnabled {
           self.summaries.pump(account: self.preferences.accountID, concurrency: self.preferences.concurrentSummaries)
         }
+        self.refreshActivity()
         try? await Task.sleep(nanoseconds: 200_000_000)
       }
     }
@@ -562,17 +698,22 @@ import UserNotifications
             addAttention(Attention(message: decision.message, groupName: name, title: "\(decision.message.sender) 找你", reason: reason, definite: true))
           }
         } else { direct = false }
-        related = related || direct || (!usingJev && decision.related)
+        let triggers = decision.triggersSummary(usingJev: usingJev)
+        related = related || triggers
         log.localDecision(decision.message, preferences: preferences, selfID: activeAccount?.subjectID ?? "",
           match: decision.match, semantic: decision.semantic,
-          action: direct || (!usingJev && decision.related) ? "命中，本群提交一次即时摘要" : (usingJev ? "本批交给 Jev" : "无关，不触发即时摘要"),
+          action: triggers ? (usingJev && !direct ? "关键词 / 称呼命中，直接提交即时摘要；Jev 仅判断是否需回应" : "命中，本群提交一次即时摘要") : (usingJev ? "本批交给 Jev" : "无关，不触发即时摘要"),
           elapsed: Date().timeIntervalSince(started))
       }
       // 同批只产生一次群触发。已有明确本地命中时无需再等 Jev 重复触发。
       if related { enqueue(batch.scope.group) }
-      else if usingJev {
-        let candidates = messages.filter { $0.senderID.isEmpty || $0.senderID != activeAccount?.subjectID }
-        if !candidates.isEmpty { jevMonitor.receive(candidates, scope: batch.scope) }
+      if usingJev {
+        // 已由本地命中提交摘要时，Jev 仍判断“是否需你回应”，但不重复提交群任务。
+        let pending = decisions.filter { decision in
+          if case .definite = decision.match { return false }
+          return decision.message.senderID.isEmpty || decision.message.senderID != activeAccount?.subjectID
+        }.map(\.message)
+        if !pending.isEmpty { jevMonitor.receive(pending, scope: batch.scope, summaryTriggered: related) }
       }
     }
     // 先将所有分组的后续任务保存，再移除缓冲消息，崩溃窗口只会复查，不会吞掉后面的群。
@@ -591,6 +732,7 @@ import UserNotifications
     let description = "即时等待 \(immediate) · 定时等待 \(periodic) · 正在摘要 \(summaries.active.count)/\(preferences.concurrentSummaries)"
     if analyzing != active { analyzing = active }
     if queueDescription != description { queueDescription = description }
+    refreshActivity()
   }
   func requestAllAnalysis() {
     guard running, preferences.aiEnabled, scanTask == nil else { return }
@@ -604,25 +746,30 @@ import UserNotifications
         let groups = try await loadGroupStates(account: account)
         try Task.checkCancellation()
         guard generation == current else { return }
+        // 网络读取边界期间不改状态；全部读完后在一次批量中入队并只落盘一次。
+        var heads: [(ConversationScope, UnreadHead?)] = [], failed: [ConversationScope] = []
         for group in groups {
           try Task.checkCancellation()
           let scope = ConversationScope(account: account, group: group.id)
           guard messageAdmission.allows(scope) else { continue }
-          if group.unread == 0 { summaries.consider(scope, head: nil); continue }
+          if group.unread == 0 { heads.append((scope, nil)); continue }
           do {
             let head = try await loader.head(scope)
             try Task.checkCancellation()
             guard generation == current else { return }
-            guard messageAdmission.allows(scope) else { continue }
-            summaries.consider(scope, head: head)
+            heads.append((scope, head))
           } catch {
             try Task.checkCancellation()
             guard generation == current else { return }
-            guard messageAdmission.allows(scope) else { continue }
-            // 单群边界读取失败也成为可恢复任务，不影响其它群扫描。
-            summaries.enqueue(scope, trigger: .periodic)
+            failed.append(scope)
             log.write("警告", "周期读取失败，入队复查", error.localizedDescription)
           }
+        }
+        summaries.batch {
+          // 入队前重新校验白名单，扫描期间移出的群不入队。
+          for (scope, head) in heads where self.messageAdmission.allows(scope) { self.summaries.consider(scope, head: head) }
+          // 单群边界读取失败也成为可恢复任务，不影响其它群扫描。
+          for scope in failed where self.messageAdmission.allows(scope) { self.summaries.enqueue(scope, trigger: .periodic) }
         }
         save()
       } catch {
@@ -649,6 +796,7 @@ import UserNotifications
     return try await summarizer.run(unread.messages) { input, ids in
       try Task.checkCancellation()
       guard self.messageAdmission.allows(unread.scope) else { throw CancellationError() }
+      self.summaryRequest(unread.scope, stage: input.stage)
       return try await client.summarize(input, allowedIDs: ids, model: model, reasoning: prefs.reasoning)
     }
   }
@@ -664,6 +812,8 @@ import UserNotifications
         text: result.summary, count: unread.messages.count, evidence: unread.messages, related: result.relevant,
         relevanceReason: result.relevanceReason))
       candidate.digests = Array(candidate.digests.suffix(500))
+      // 与新摘要同一次原子落盘：落盘失败时覆盖标记也不生效。
+      DigestCoverage.apply(&candidate.digests)
       for judgment in result.judgements where judgment.needsResponse && judgment.confidence == "high" {
         if let message = unread.messages.first(where: { $0.id == judgment.messageID }),
            message.senderID.isEmpty || message.senderID != activeAccount?.subjectID,
@@ -676,11 +826,13 @@ import UserNotifications
     }
     // 不能使用吞掉错误的 save()。标记、摘要、待办必须作为同一快照原子保存成功。
     try disk.save(candidate)
-    snapshot = candidate
+    // 仅待办变化时界面无需刷新；有摘要结果时才发布新快照。summaryState 的权威来源是协调器。
+    if completion != nil { snapshot = candidate }
     if let completion {
       lastAnalysis = Date()
       if !isQuiet {
         for item in newAttentions { notify(item) }
+        if !newAttentions.isEmpty || completion.result.relevant { markAttentionArrived() }
         if preferences.autoExpand, completion.result.relevant { onAttention?() }
       }
     }
@@ -692,13 +844,14 @@ import UserNotifications
       "信息", "新增相关提醒",
       "群 \(EventLog.ref(item.message.groupID))；消息 \(EventLog.ref(item.id))；\(item.definite ? "直接命中":"AI判断")"
     )
+    markAttentionArrived()
     if !isQuiet {
       if preferences.autoExpand { onAttention?() }
       notify(item)
     }
   }
   func readRelatedSummary(_ digest: Digest) {
-    readSummaries([digest])
+    readFocusEntries([.summary(digest)])
   }
   func readSummaries(_ digests: [Digest]) {
     setViewed(digestIDs: Set(digests.filter { $0.accountID == preferences.accountID }.map(\.id)))

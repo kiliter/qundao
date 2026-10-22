@@ -2,7 +2,7 @@ import QundaoCore
 import SwiftUI
 
 struct ContentView: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   var body: some View {
     NavigationSplitView {
       VStack(spacing: 0) {
@@ -11,71 +11,28 @@ struct ContentView: View {
           Text("群岛").font(.title3.weight(.semibold))
           Spacer()
         }.padding(18)
-        List(selection: $store.page) {
+        List(selection: Bindable(store).page) {
           Section("工作空间") { ForEach([Page.attention, .summary, .groups]) { nav($0) } }
           Section("偏好设置") {
             ForEach([Page.rules, .appearance, .connection, .logs]) { nav($0) }
           }
         }.listStyle(.sidebar)
-        VStack(alignment: .leading, spacing: 7) {
-          Label(store.running ? "正在监听" : "监听已暂停",
-                systemImage: store.running ? "circle.fill" : "pause.circle")
-            .font(.caption).foregroundStyle(store.running ? .green : .secondary)
-          Text("白名单 \(store.preferences.selectedGroups.count) 个群 · 即时与周期摘要")
-            .font(.system(size: 10)).foregroundStyle(.secondary)
-        }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+        SidebarStatus()
       }.navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 230)
     } detail: {
       VStack(spacing: 0) {
         if let error = store.error { errorBanner(error) }
-        pageContent.frame(maxWidth: .infinity, maxHeight: .infinity)
+        PageHost(page: store.page).frame(maxWidth: .infinity, maxHeight: .infinity)
         Divider()
-        HStack(spacing: 8) {
-          Circle().fill(store.running ? Color.green : Color.secondary).frame(width: 5, height: 5)
-          Text(store.streamStatus).lineLimit(1)
-          if store.running { Text("· " + store.decisionStatus).lineLimit(1) }
-          Spacer()
-          if let time = store.lastSync {
-            Text("最近同步 \(time.formatted(date: .omitted, time: .shortened))")
-          }
-        }.font(.system(size: 10)).foregroundStyle(.secondary)
-          .padding(.horizontal, 18).padding(.vertical, 8)
+        StatusFooter()
       }
       .navigationTitle(store.page.rawValue)
       .toolbar {
-        ToolbarItem(placement: .primaryAction) {
-          HStack(spacing: 10) {
-            if store.syncing || store.analyzing { ProgressView().controlSize(.small) }
-            Button(store.running ? "暂停监听" : "开始监听",
-                   systemImage: store.running ? "pause" : "play") {
-              store.running ? store.stop() : store.start()
-            }
-          }
-        }
+        ToolbarItem(placement: .primaryAction) { ListeningToolbar() }
       }
     }
     .frame(minWidth: 940, minHeight: 620).tint(.indigo)
-    .sheet(item: $store.detail) { AttentionDetail(item: $0).environmentObject(store) }
-  }
-  @ViewBuilder private var pageContent: some View {
-    switch store.page {
-    case .attention: AttentionPage()
-    case .summary: SummaryPage()
-    case .groups: GroupsPage()
-    case .logs: LogsPage()
-    default:
-      ScrollView {
-        VStack(alignment: .leading, spacing: 18) {
-          switch store.page {
-          case .rules: RulesPage()
-          case .appearance: AppearancePage()
-          case .connection: ConnectionPage()
-          default: EmptyView()
-          }
-        }.padding(24).frame(maxWidth: 860, alignment: .leading)
-          .frame(maxWidth: .infinity, alignment: .topLeading)
-      }
-    }
+    .sheet(item: Bindable(store).detail) { AttentionDetail(item: $0).environment(store) }
   }
   private func nav(_ page: Page) -> some View {
     HStack {
@@ -95,6 +52,168 @@ struct ContentView: View {
       Button { store.error = nil } label: { Image(systemName: "xmark") }
         .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("关闭提示")
     }.padding(.horizontal, 18).padding(.vertical, 10).background(.orange.opacity(0.06))
+  }
+}
+
+/// 主窗口页面容器：每个页面首次访问时创建独立的 NSHostingView，之后只挂上 / 卸下，不重建。
+/// SwiftUI 的 opacity(0) 会把隐藏页面的 AppKit 子视图摘下、显示时重新挂载，整棵表格和文字要重新排版；
+/// 这里的 AppKit 视图始终挂在窗口里，切换页面不重建、不重新挂载。
+private struct PageHost: NSViewRepresentable {
+  let page: Page
+  @Environment(AppStore.self) private var store
+  func makeNSView(context: Context) -> PageContainerView { PageContainerView(store: store) }
+  func updateNSView(_ view: PageContainerView, context: Context) { view.show(page) }
+}
+
+final class PageContainerView: NSView {
+  private let store: AppStore
+  private var hosts: [Page: NSView] = [:]
+  private var current: Page?
+  /// 让各页面知道自己是否可见：隐藏页面暂停实时任务，重新显示时刷新输入框。
+  @MainActor @Observable final class Visibility { var active: Page? }
+  private let visibility = Visibility()
+  init(store: AppStore) { self.store = store; super.init(frame: .zero) }
+  required init?(coder: NSCoder) { fatalError("不使用归档初始化") }
+  @MainActor func show(_ page: Page) {
+    guard page != current else { return }
+    let first = current == nil
+    makeHost(page)
+    guard let host = hosts[page] else { return }
+    if host.frame != bounds { host.frame = bounds }
+    host.isHidden = false
+    if host.superview !== self { addSubview(host) }
+    // 隐藏页面从窗口卸下（对象与 SwiftUI 状态保留）：仍挂在窗口里的宿主会随日志刷新、状态变化
+    // 参与每帧排版与渲染，真实触控板滚动时与当前页抢主线程。重新挂回不重建视图树。
+    for (key, other) in hosts where key != page && other.superview != nil { other.removeFromSuperview() }
+    current = page
+    visibility.active = page
+    if first { prewarm() } else { PerfProbe.pageSwitch(to: page.rawValue) }
+  }
+  /// 首屏显示后，空闲时逐个预建其余页面（每次一个，间隔让出主线程）：临时挂到最底层完成首次排版与渲染，再卸下。
+  @MainActor private func prewarm() {
+    Task { @MainActor [weak self] in
+      try? await Task.sleep(nanoseconds: 1_500_000_000)
+      for page in Page.allCases {
+        guard let self else { return }
+        guard self.hosts[page] == nil else { continue }
+        self.makeHost(page)
+        if let host = self.hosts[page] {
+          host.alphaValue = 0
+          host.frame = self.bounds
+          self.addSubview(host, positioned: .below, relativeTo: nil)
+          host.layoutSubtreeIfNeeded()
+          host.displayIfNeeded()
+          try? await Task.sleep(nanoseconds: 50_000_000)
+          host.alphaValue = 1
+          if self.current != page { host.removeFromSuperview() }
+        }
+        try? await Task.sleep(nanoseconds: 250_000_000)
+      }
+    }
+  }
+  override func layout() {
+    super.layout()
+    if let current, let host = hosts[current], host.frame != bounds { host.frame = bounds }
+  }
+  @MainActor private func makeHost(_ page: Page) {
+    if hosts[page] == nil {
+      let root = AnyView(PageRoot(page: page, visibility: visibility).environment(store).tint(.indigo))
+      let host: NSView
+      switch page {
+      case .rules, .appearance, .connection: host = SettingsScrollView(content: root)
+      default:
+        let hosting = NSHostingView(rootView: root)
+        hosting.sizingOptions = []
+        // 页面宿主位于详情栏内部，由外层 SwiftUI 处理工具栏安全区。
+        hosting.safeAreaRegions = []
+        host = hosting
+      }
+      // 不用约束：拖动窗口时只给可见页面设置尺寸，隐藏页面在显示前再调整，避免全部页面跟着重新排版。
+      host.translatesAutoresizingMaskIntoConstraints = true
+      host.autoresizingMask = []
+      host.frame = bounds
+      hosts[page] = host
+    }
+  }
+}
+
+private struct PageRoot: View {
+  let page: Page
+  let visibility: PageContainerView.Visibility
+  var body: some View {
+    let active = visibility.active == page
+    content(active: active).environment(\.pageActive, active)
+  }
+  @ViewBuilder private func content(active: Bool) -> some View {
+    switch page {
+    case .attention: AttentionPage()
+    case .summary: SummaryPage()
+    case .groups: GroupsPage()
+    case .logs: LogsPage(active: active)
+    default:
+      // 偏好设置页由 PageContainerView 放进 AppKit 滚动视图（SettingsScrollView），这里只给内容。
+      VStack(alignment: .leading, spacing: 18) {
+        switch page {
+        case .rules: RulesPage()
+        case .appearance: AppearancePage()
+        case .connection: ConnectionPage()
+        default: EmptyView()
+        }
+      }.padding(24).frame(maxWidth: 860, alignment: .leading)
+        .frame(maxWidth: .infinity, alignment: .topLeading)
+    }
+  }
+}
+
+private struct PageActiveKey: EnvironmentKey { static let defaultValue = true }
+extension EnvironmentValues {
+  /// 页面是否为当前可见页；保留的隐藏页面据此暂停实时任务或在重新显示时刷新。
+  var pageActive: Bool {
+    get { self[PageActiveKey.self] }
+    set { self[PageActiveKey.self] = newValue }
+  }
+}
+
+/// 状态信息单独成视图，推送/同步状态变化只刷新这一小块。
+private struct StatusFooter: View {
+  @Environment(AppStore.self) var store
+  var body: some View {
+    HStack(spacing: 8) {
+      Circle().fill(store.running ? Color.green : Color.secondary).frame(width: 5, height: 5)
+      Text(store.streamStatus).lineLimit(1)
+      if store.running { Text("· " + store.decisionStatus).lineLimit(1) }
+      Spacer()
+      if let time = store.lastSync {
+        Text("最近同步 \(time.formatted(date: .omitted, time: .shortened))")
+      }
+    }.font(.system(size: 10)).foregroundStyle(.secondary)
+      .padding(.horizontal, 18).padding(.vertical, 8)
+  }
+}
+
+private struct SidebarStatus: View {
+  @Environment(AppStore.self) var store
+  var body: some View {
+    VStack(alignment: .leading, spacing: 7) {
+      Label(store.running ? "正在监听" : "监听已暂停",
+            systemImage: store.running ? "circle.fill" : "pause.circle")
+        .font(.caption).foregroundStyle(store.running ? .green : .secondary)
+      Text("白名单 \(store.preferences.selectedGroups.count) 个群 · 即时与周期摘要")
+        .font(.system(size: 10)).foregroundStyle(.secondary)
+    }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
+  }
+}
+
+private struct ListeningToolbar: View {
+  @Environment(AppStore.self) var store
+  var body: some View {
+    HStack(spacing: 10) {
+      if store.syncing || store.analyzing { ProgressView().controlSize(.small) }
+      Button(store.running ? "暂停监听" : "开始监听",
+             systemImage: store.running ? "pause" : "play") {
+        store.running ? store.stop() : store.start()
+      }
+    }
   }
 }
 
@@ -118,7 +237,7 @@ struct SoftCard<Content: View>: View {
   }
 }
 struct AttentionCard: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   let item: Attention
   var compact = false
   var body: some View {
@@ -151,7 +270,7 @@ struct AttentionCard: View {
   }
 }
 struct AttentionDetail: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @Environment(\.dismiss) var dismiss
   let item: Attention
   var body: some View {
@@ -161,7 +280,7 @@ struct AttentionDetail: View {
         Spacer()
         Button("关闭") { dismiss() }
       }
-      let context = store.snapshot.messages.filter {
+      let context = store.cachedMessages.filter {
         $0.accountID == item.message.accountID && $0.groupID == item.message.groupID
           && abs($0.timestamp - item.message.timestamp) < 300000
       }
@@ -184,5 +303,53 @@ struct AttentionDetail: View {
         }
       }
     }.padding(24).frame(width: 620, height: 550)
+  }
+}
+
+/// 偏好设置页的滚动容器：AppKit 滚动视图 + 按内容高度定尺寸的 SwiftUI 文档视图。
+/// SwiftUI ScrollView 每滚动一帧都会通知视图图更新，整页重新排版、测量文字，惯性滚动时掉帧；
+/// 这里滚动只移动 clip view，文档视图尺寸不变，SwiftUI 不参与。宽度变化时内容重排并回报新高度。
+final class SettingsScrollView: NSScrollView {
+  private final class HeightSink { weak var target: SettingsScrollView? }
+  private let document: NSHostingView<AnyView>
+  private var contentHeight: CGFloat = 0
+  init(content: AnyView) {
+    let sink = HeightSink()
+    let measured = AnyView(
+      content
+        .fixedSize(horizontal: false, vertical: true)
+        .background(GeometryReader { proxy in
+          Color.clear
+            .onAppear { sink.target?.contentMeasured(proxy.size.height) }
+            .onChange(of: proxy.size.height) { _, height in sink.target?.contentMeasured(height) }
+        })
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading))
+    document = NSHostingView(rootView: measured)
+    document.sizingOptions = []
+    // 关键：滚动时 AppKit 每帧移动文档视图原点，NSHostingView 默认把它当作安全区变化，
+    // 触发整个视图图更新（含隐藏页面的弹出菜单、侧边栏列表与辅助功能文字解析），真实触控板滚动严重掉帧。
+    // 文档视图在滚动视图内部，不需要安全区。
+    document.safeAreaRegions = []
+    document.translatesAutoresizingMaskIntoConstraints = true
+    super.init(frame: .zero)
+    sink.target = self
+    drawsBackground = false
+    borderType = .noBorder
+    hasVerticalScroller = true
+    autohidesScrollers = true
+    contentView.drawsBackground = false
+    documentView = document
+  }
+  required init?(coder: NSCoder) { fatalError("不使用归档初始化") }
+  private func contentMeasured(_ height: CGFloat) {
+    guard height > 1, abs(height - contentHeight) > 0.5 else { return }
+    contentHeight = height
+    needsLayout = true
+  }
+  override func layout() {
+    super.layout()
+    let size = contentView.bounds.size
+    let frame = NSRect(x: 0, y: 0, width: size.width, height: max(contentHeight, size.height))
+    if document.frame != frame { document.frame = frame }
   }
 }

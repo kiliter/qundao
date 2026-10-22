@@ -12,9 +12,11 @@ struct SummaryReadingCard: View {
   let viewed: Bool
   var compact = false
   var stateLabel: String? = nil
+  /// 并入本卡片的「找你 / 需回应」提醒。
+  var tags: [Attention] = []
   var onRead: () -> Void
   var onSnooze: (() -> Void)? = nil
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @State private var showingSource = false
   var body: some View {
     VStack(alignment: .leading, spacing: compact ? 9 : 14) {
@@ -27,6 +29,7 @@ struct SummaryReadingCard: View {
       }
       Text(text).font(.system(size: compact ? 12 : 14)).lineSpacing(compact ? 4 : 6)
         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
+      if !tags.isEmpty { AttentionTags(tags: tags) }
       if !reason.isEmpty {
         Text(reason).font(.caption).foregroundStyle(.secondary)
       }
@@ -48,43 +51,76 @@ struct SummaryReadingCard: View {
     }.padding(compact ? 10 : 18)
       .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
       .sheet(isPresented: $showingSource) {
-        VStack(spacing: 0) {
-          HStack {
-            VStack(alignment: .leading, spacing: 4) {
-              Text(groupName).font(.headline)
-              Text("本批原文 · \(messages.count) 条消息").font(.caption).foregroundStyle(.secondary)
-            }
-            Spacer()
-            Button("关闭") { showingSource = false }.keyboardShortcut(.cancelAction)
-          }.padding(18)
-          Divider()
-          ChatTranscript(messages: messages.sorted { $0.timestamp < $1.timestamp },
-                         selfID: store.activeAccount?.subjectID ?? "")
-          Divider()
-          Text("阅读原文不会改变微信未读状态").font(.caption2).foregroundStyle(.secondary).padding(12)
-        }.frame(width: 640, height: 560)
+        SourceTranscriptSheet(groupName: groupName, messages: messages) { showingSource = false }
       }
   }
 }
 
+/// 本批原文弹窗。
+struct SourceTranscriptSheet: View {
+  @Environment(AppStore.self) var store
+  let groupName: String
+  let messages: [Message]
+  let close: () -> Void
+  var body: some View {
+    VStack(spacing: 0) {
+      HStack {
+        VStack(alignment: .leading, spacing: 4) {
+          Text(groupName).font(.headline)
+          Text("本批原文 · \(messages.count) 条消息").font(.caption).foregroundStyle(.secondary)
+        }
+        Spacer()
+        Button("关闭", action: close).keyboardShortcut(.cancelAction)
+      }.padding(18)
+      Divider()
+      ChatTranscript(messages: messages.sorted { $0.timestamp < $1.timestamp },
+                     selfID: store.activeAccount?.subjectID ?? "")
+      Divider()
+      Text("阅读原文不会改变微信未读状态").font(.caption2).foregroundStyle(.secondary).padding(12)
+    }.frame(width: 640, height: 560)
+  }
+}
+
 struct DigestReadingCard: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   let digest: Digest
   var compact = false
+  var tags: [Attention] = []
   var body: some View {
     SummaryReadingCard(recordID: digest.id.uuidString, groupName: digest.groupName, text: digest.text, reason: digest.relevanceReason,
-      date: digest.messageDate, messages: digest.evidence, viewed: digest.attentionReadAt != nil,
-      compact: compact, onRead: { store.readRelatedSummary(digest) })
+      date: digest.messageDate, messages: digest.evidence, viewed: !digest.isAttentionPending,
+      compact: compact, stateLabel: digest.attentionReadAt == nil && digest.supersededBy != nil ? "已被更新摘要覆盖" : nil,
+      tags: tags, onRead: { store.readRelatedSummary(digest) })
+  }
+}
+
+/// 「找你 / 需回应」标签：明确提及与模型判断分开显示，悬停查看原因。
+struct AttentionTags: View {
+  let tags: [Attention]
+  var dark = false
+  var body: some View {
+    HStack(spacing: 6) {
+      ForEach(tags.prefix(3), id: \.id) { tag in
+        Label(tag.title, systemImage: tag.definite ? "at" : "bubble.left.and.exclamationmark.bubble.right")
+          .font(.caption2.weight(.medium)).lineLimit(1)
+          .foregroundStyle(tag.definite ? Color.orange : Color.indigo)
+          .padding(.horizontal, 7).padding(.vertical, 2)
+          .background((tag.definite ? Color.orange : Color.indigo).opacity(dark ? 0.22 : 0.12), in: Capsule())
+          .help(tag.reason)
+      }
+      if tags.count > 3 { Text("+\(tags.count - 3)").font(.caption2).foregroundStyle(.secondary) }
+    }.accessibilityElement(children: .combine)
   }
 }
 
 struct FocusReadingCard: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   let entry: AttentionEntry
   var compact = false
+  var tags: [Attention] = []
   var body: some View {
     switch entry {
-    case .summary(let digest): DigestReadingCard(digest: digest, compact: compact)
+    case .summary(let digest): DigestReadingCard(digest: digest, compact: compact, tags: tags)
     case .response(let item):
       SummaryReadingCard(recordID: item.id, groupName: item.groupName, text: item.title, reason: item.reason,
         date: item.message.date, messages: [item.message], viewed: item.status == "done", compact: compact,

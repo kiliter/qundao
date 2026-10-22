@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="zh-CN"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>群岛 · 刘海处理状态与布局原型</title>
+<style>
+:root{--mint:#5fe0b2;--amber:#ffb84d;--violet:#a98bff;--cyan:#4fc3ff;--orange:#ff8a5c;--grey:#8b8f9a;--ink:#f2f3f7}
+*{box-sizing:border-box}body{margin:0;font:13px -apple-system,BlinkMacSystemFont,'PingFang SC',sans-serif;background:linear-gradient(150deg,#b9c3d6,#d9d5e6 50%,#a8a6c4);min-height:100vh;color:#222}
+button{font:inherit;border:0;background:none;color:inherit;cursor:pointer}
+button:focus-visible{outline:2px solid #8f9cff;outline-offset:2px;border-radius:6px}
+.menubar{height:32px;background:#ffffff30;display:flex;align-items:center;padding:0 18px;font-size:12px;gap:18px}
+.stage{position:relative;height:calc(100vh - 32px - 150px);min-height:560px}
+/* ---------- 刘海 ---------- */
+.island{position:absolute;left:50%;top:-32px;transform:translateX(-50%);background:#000;color:var(--ink);overflow:hidden;
+  width:var(--w);height:var(--h);border-radius:0 0 var(--r) var(--r);
+  transition:width .42s cubic-bezier(.3,1.25,.4,1),height .42s cubic-bezier(.3,1.15,.4,1),border-radius .3s;box-shadow:0 10px 30px #0003}
+.island{--w:236px;--h:32px;--r:13px}
+.island.active{--w:300px}
+.island.open{--w:460px;--h:var(--open-h,520px);--r:24px}
+.bar{height:32px;display:flex;align-items:center;justify-content:space-between;padding:0 12px;position:relative}
+.cam{position:absolute;left:50%;top:0;width:180px;height:32px;transform:translateX(-50%);pointer-events:none}
+.wing{display:flex;align-items:center;gap:6px;min-width:0;font-size:11px;font-weight:600;font-variant-numeric:tabular-nums;white-space:nowrap}
+.wing.left{color:var(--c,var(--mint))}
+.wing.right{color:#bfc4ff}
+.wlabel{opacity:0;max-width:0;overflow:hidden;transition:opacity .25s .1s,max-width .35s}
+.island.active .wlabel{opacity:1;max-width:60px}
+.island.open .wlabel{opacity:0;max-width:0}
+.count{display:inline-block;transition:transform .25s}
+.count.bump{animation:bump .5s}
+@keyframes bump{30%{transform:scale(1.5);color:#fff}}
+/* 状态图形 */
+.glyph{width:14px;height:14px;position:relative;flex:none}
+.glyph>*{position:absolute;inset:0;opacity:0;transform:scale(.4);transition:opacity .2s,transform .3s cubic-bezier(.3,1.4,.5,1)}
+.glyph>.on{opacity:1;transform:none}
+.g-idle::after{content:'';position:absolute;inset:4px;border-radius:50%;background:currentColor;box-shadow:0 0 6px currentColor}
+.g-paused::after{content:'';position:absolute;inset:4px;border-radius:50%;border:1.5px solid currentColor}
+.g-ring svg{width:14px;height:14px;transform:rotate(-90deg)}
+.g-ring circle{fill:none;stroke-width:2.2}.g-ring .track{stroke:#ffffff22}.g-ring .val{stroke:currentColor;stroke-linecap:round;stroke-dasharray:31.4;transition:stroke-dashoffset .1s linear}
+.g-dots{display:flex;align-items:center;justify-content:center;gap:2px}
+.g-dots i{width:3px;height:3px;border-radius:50%;background:currentColor;animation:hop 1s infinite}
+.g-dots i:nth-child(2){animation-delay:.15s}.g-dots i:nth-child(3){animation-delay:.3s}
+@keyframes hop{0%,60%,100%{transform:none;opacity:.45}30%{transform:translateY(-3px);opacity:1}}
+.g-spin::after{content:'';position:absolute;inset:1px;border-radius:50%;border:2px solid #ffffff22;border-top-color:currentColor;border-right-color:currentColor;animation:spin .8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+.g-wait i{animation-duration:1.8s}
+.g-retry::after{content:'↻';position:absolute;inset:0;display:grid;place-items:center;font-size:12px;animation:spin 2.4s linear infinite}
+.g-done::after{content:'✓';position:absolute;inset:0;display:grid;place-items:center;font-size:11px;font-weight:800}
+.glyph .g-done.on{animation:pop .5s}
+@keyframes pop{0%{transform:scale(.2)}60%{transform:scale(1.35)}100%{transform:none}}
+/* 展开 */
+.panel{position:absolute;left:0;right:0;top:32px;bottom:0;display:flex;flex-direction:column;opacity:0;transition:opacity .15s}
+.island.open .panel{opacity:1;transition:opacity .2s .12s}
+.head{height:44px;display:flex;align-items:center;gap:8px;padding:0 16px;flex:none}
+.head strong{font-size:14px}.muted{color:#8d919c}
+.head .sp{flex:1}.icon{color:#9a9eaa;padding:4px 6px;border-radius:6px;font-size:12px}.icon:hover{background:#ffffff14;color:#fff}
+/* 处理流水线 */
+.pipe{margin:0 12px;border-radius:12px;background:#121317;border:1px solid #23252c;overflow:hidden;flex:none;
+  display:grid;grid-template-rows:0fr;transition:grid-template-rows .35s cubic-bezier(.3,1,.4,1),margin .35s,border-color .35s}
+.pipe.show{grid-template-rows:1fr;margin-bottom:8px}
+.pipe:not(.show){border-color:transparent;background:transparent}
+.pipe>div{min-height:0}
+.steps{display:grid;grid-template-columns:1fr auto 1fr auto 1fr;align-items:center;padding:10px 12px 6px}
+.step{display:flex;align-items:center;gap:7px;color:#5e626d;transition:color .3s;min-width:0}
+.step .glyph{color:inherit}
+.step b{font-size:11.5px;font-weight:600}
+.step small{display:block;font-size:10px;color:#6d717c;font-variant-numeric:tabular-nums;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.step.on{color:var(--c)}.step.on small{color:#b5b9c4}
+.step.done{color:#8f939d}
+.link{height:1px;width:22px;background:#2a2d35;position:relative;overflow:hidden;margin:0 6px}
+.link.flow::after{content:'';position:absolute;inset:0;width:40%;background:linear-gradient(90deg,transparent,#ffffff99,transparent);animation:flow 1s linear infinite}
+@keyframes flow{from{transform:translateX(-100%)}to{transform:translateX(260%)}}
+.detail{padding:0 12px 10px;font-size:11px;color:#9ea2ad;display:flex;gap:6px;flex-wrap:wrap}
+.chip{padding:2px 7px;border-radius:999px;background:#ffffff0d;color:#c9ccd5;font-size:10.5px;display:inline-flex;gap:5px;align-items:center}
+.chip i{width:5px;height:5px;border-radius:50%;background:var(--c,#888)}
+.bufbar{height:2px;background:#ffffff10;margin:0 12px 10px;border-radius:2px;overflow:hidden}
+.bufbar span{display:block;height:100%;background:var(--amber);transition:width .1s linear}
+/* 列表 */
+.list{flex:1;min-height:0;overflow-y:auto;padding:0 8px 4px;scrollbar-width:thin;scrollbar-color:#444 transparent}
+.row{display:grid;grid-template-columns:30px 1fr;gap:10px;padding:10px 8px;border-radius:12px;position:relative;cursor:pointer;transition:background .15s}
+.row+.row::before{content:'';position:absolute;left:48px;right:8px;top:0;height:1px;background:#ffffff0f}
+.row:hover{background:#ffffff0c}.row:hover::before,.row:hover+.row::before{opacity:0}
+.av{width:30px;height:30px;border-radius:9px;display:grid;place-items:center;font-size:13px;font-weight:600;color:hsl(var(--hue) 80% 78%);background:hsl(var(--hue) 50% 50%/.18)}
+.rt{display:flex;align-items:center;gap:6px;height:20px}
+.rt .name{font-weight:600;font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.badge{font-size:10px;padding:0 6px;border-radius:99px;background:#6f74ff30;color:#b8bcff;font-variant-numeric:tabular-nums}
+.updating{font-size:10px;color:var(--cyan);display:inline-flex;align-items:center;gap:4px}
+.updating .glyph{width:10px;height:10px}
+.rt .sp{flex:1}
+.slot{position:relative;width:46px;height:20px;flex:none}
+.slot>*{position:absolute;right:0;top:50%;transform:translateY(-50%);transition:opacity .15s}
+.time{font-size:10.5px;color:#8a8e99;font-variant-numeric:tabular-nums}
+.read{opacity:0;font-size:10.5px;color:#d7daf0;background:#ffffff14;border-radius:6px;padding:2px 7px;white-space:nowrap}
+.row:hover .time{opacity:0}.row:hover .read{opacity:1}
+.entries{margin-top:3px;display:flex;flex-direction:column;gap:7px}
+.entry{font-size:11.5px;line-height:1.6;color:#d5d8e0}
+.entries.multi .entry{padding-left:10px;border-left:2px solid #ffffff14}
+.entries.multi .entry:first-child{border-left-color:#7d82ff88}
+.entry em{font-style:normal;font-size:10px;color:#7f838e;margin-right:6px;font-variant-numeric:tabular-nums}
+.row.new{animation:rowin .6s cubic-bezier(.3,1.3,.5,1)}
+@keyframes rowin{from{opacity:0;transform:translateY(-8px)}}
+.empty{text-align:center;color:#8d919c;padding:30px 0}
+.foot{height:38px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 16px;font-size:11px;color:#8d919c;border-top:1px solid #ffffff0d}
+.foot button{color:#c8cbf5}
+/* 控制台 */
+.console{position:fixed;left:0;right:0;bottom:0;background:#fffffff0;border-top:1px solid #0001;padding:12px 20px;display:flex;flex-direction:column;gap:8px;backdrop-filter:blur(10px)}
+.console .r{display:flex;gap:6px;flex-wrap:wrap;align-items:center}
+.console button{padding:5px 10px;border-radius:7px;background:#eceef5;font-size:12px}
+.console button.sel{background:#5966d9;color:#fff}
+.console label{font-size:12px;display:flex;gap:4px;align-items:center;margin-left:8px}
+.note{font-size:11.5px;color:#666;line-height:1.6}
+.reduce *{animation:none!important;transition:none!important}
+</style></head><body>
+<div class="menubar"><b>群岛</b><span>文件</span><span>编辑</span><span style="margin-left:auto">10月22日 周四 11:32</span></div>
+<div class="stage">
+ <div class="island" id="island">
+  <div class="bar" id="bar">
+   <div class="wing left" id="lw"><div class="glyph" id="g"></div><span class="wlabel" id="wl"></span></div>
+   <div class="cam"></div>
+   <div class="wing right"><span class="count" id="cnt">4</span></div>
+  </div>
+  <div class="panel">
+   <div class="head"><strong>需要关注</strong><span class="muted" id="hc">4</span><span class="sp"></span>
+    <button class="icon">✓ 一键已阅</button><button class="icon" title="固定">⌖</button><button class="icon" id="close" title="收起">︿</button></div>
+   <div class="pipe" id="pipe"><div>
+    <div class="steps">
+     <div class="step" id="s-buf" style="--c:var(--amber)"><div class="glyph" data-k="ring"></div><div><b>缓冲</b><small id="d-buf">空</small></div></div>
+     <div class="link" id="l1"></div>
+     <div class="step" id="s-jev" style="--c:var(--violet)"><div class="glyph" data-k="dots"></div><div><b>Jev 判断</b><small id="d-jev">空闲</small></div></div>
+     <div class="link" id="l2"></div>
+     <div class="step" id="s-cpa" style="--c:var(--cyan)"><div class="glyph" data-k="spin"></div><div><b>CPA 摘要</b><small id="d-cpa">空闲</small></div></div>
+    </div>
+    <div class="bufbar" id="bufbar"><span id="bufp" style="width:0"></span></div>
+    <div class="detail" id="detail"></div>
+   </div></div>
+   <div class="list" id="list"></div>
+   <div class="foot"><span id="foot">全部处理完毕 · 上次摘要 11:25</span><button>打开主窗口 ↗</button></div>
+  </div>
+ </div>
+</div>
+<div class="console">
+ <div class="r"><b style="font-size:12px;margin-right:6px">处理状态</b><span id="btns"></span>
+  <button id="auto">▶ 自动演示一轮</button>
+  <label><input type="checkbox" id="open" checked> 展开</label>
+  <label><input type="checkbox" id="rm"> 减少动态效果</label></div>
+ <div class="note" id="note"></div>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const S={
+ idle:{c:'--mint',g:'idle',label:'',note:'空闲：左翼为常亮小绿点，宽度回到默认；展开面板不显示流水线，底栏显示上次摘要时间。'},
+ buffering:{c:'--amber',g:'ring',label:'',note:'缓冲中：左翼变成倒计时环，标签显示距首条到期剩余秒数（截止时间按首条到达固定，不随新消息延后）。展开后流水线点亮「缓冲」，进度条同步消耗。'},
+ jev:{c:'--violet',g:'dots',label:'Jev',note:'Jev 判断：三点跳动。流水线显示批次数与正在判断的群；本地明确命中的直接越过 Jev 进入摘要。'},
+ loading:{c:'--cyan',g:'spin',label:'读取',note:'摘要第一步：从 Alpha 完整分页读取该群全部未读，转圈并显示“读取”。对应群行出现“正在更新”。'},
+ cpa:{c:'--cyan',g:'spin',label:'摘要',note:'CPA 摘要：转圈 + 并发计数；分段时显示 第 2/3 段。'},
+ waiting:{c:'--grey',g:'dots',label:'',note:'排队：摘要并发已满或等待周期任务，慢速灰点 + 等待数。'},
+ retry:{c:'--orange',g:'retry',label:'',note:'退避重试：橙色循环箭头 + 剩余秒数；新触发保留，进度不推进。'},
+ done:{c:'--mint',g:'done',label:'+1',note:'新增关注：勾号弹出、计数跳动、新行从顶部滑入，约 1.6 秒后回到空闲。'},
+ paused:{c:'--grey',g:'paused',label:'',note:'已暂停：灰色空心圆，流水线隐藏。'}
+};
+const names={idle:'空闲',buffering:'缓冲倒计时',jev:'Jev 判断',loading:'读取未读',cpa:'CPA 摘要',waiting:'排队',retry:'失败退避',done:'新增关注',paused:'已暂停'};
+const kinds=['idle','paused','ring','dots','spin','retry','done'];
+function glyphHTML(){return kinds.map(k=>'<span class="g-'+k+(k==='dots'?' g-dots':'')+'">'+(k==='dots'?'<i></i><i></i><i></i>':k==='ring'?'<svg viewBox="0 0 14 14"><circle class="track" cx="7" cy="7" r="5"/><circle class="val" cx="7" cy="7" r="5"/></svg>':'')+'</span>').join('')}
+document.querySelectorAll('.glyph').forEach(g=>{g.innerHTML=glyphHTML();if(g.dataset.k)g.querySelector('.g-'+g.dataset.k).classList.add('on')});
+let threads=[
+ {n:'赵珊珊、张沈鑫、Grace、哈姆',h:220,e:[['11:25','群内讨论工作台登录鉴权时上传证件图片的问题。Timon 表示操作时已上传，但到签字环节无法调出证件；陈鹏要求提供从登录鉴权开始的操作视频，目前未见解决结果。']]},
+ {n:'小系统版本风险AI评估',h:150,e:[['11:23','你在难为我胖虎 可能需要你回应']]},
+ {n:'2026终端大卖',h:30,e:[['11:19','讨论电子签名审批、串码绑定与 CRM 归档的接口流程。赵珊珊说明，系统需将审批通过/不通过结果同步给他们；他们完成最终单据合成后再回调 CRM 归档。双方对流程及接口调用方存在分歧，建议再对齐需求。'],['10:52','群内正在讨论签字审批结果回调与串码绑定的先后顺序：签名审核通过后应完成最终单据合成，再回调 CRM 归档；“早点睡觉”称当前流程是先展示串码绑定，绑定成功后再同步审核结果。目前未见最终结论。']]}
+];
+let state='idle',deadline=0,total=3,updating=null,newRow=false;
+function render(){
+ const s=S[state],isl=$('island');
+ isl.style.setProperty('--c','var('+s.c+')');$('lw').style.setProperty('--c','var('+s.c+')');
+ $('g').querySelectorAll(':scope>span').forEach(x=>x.classList.toggle('on',x.classList.contains('g-'+s.g)));
+ isl.classList.toggle('active',!['idle','paused'].includes(state));
+ const n=threads.reduce((a,t)=>a+t.e.length,0);$('cnt').textContent=n;$('hc').textContent=n;
+ // 流水线
+ const order=['buffering','jev','loading','cpa'];const i=order.indexOf(state);
+ const show=!['idle','paused','done'].includes(state);$('pipe').classList.toggle('show',show);
+ const st=(id,on,done)=>{$(id).classList.toggle('on',on);$(id).classList.toggle('done',done)};
+ st('s-buf',state==='buffering',i>0);st('s-jev',state==='jev',i>1);st('s-cpa',['loading','cpa','waiting','retry'].includes(state),false);
+ if(state==='retry')$('s-cpa').style.setProperty('--c','var(--orange)');else if(state==='waiting')$('s-cpa').style.setProperty('--c','var(--grey)');else $('s-cpa').style.setProperty('--c','var(--cyan)');
+ $('s-cpa').querySelectorAll('.glyph>span').forEach(x=>x.classList.toggle('on',x.classList.contains(state==='retry'?'g-retry':state==='waiting'?'g-dots':'g-spin')));
+ $('l1').classList.toggle('flow',state==='jev');$('l2').classList.toggle('flow',state==='loading');
+ $('bufbar').style.display=state==='buffering'?'':'none';
+ $('d-buf').textContent=state==='buffering'?'5 条 · 2 个群':i>0?'已提交':'空';
+ $('d-jev').textContent=state==='jev'?'2 批 · 1 个群':i>1?'1 个群相关':'空闲';
+ $('d-cpa').textContent={loading:'读取未读…',cpa:'第 2/3 段',waiting:'等待 2 · 并发 3/3',retry:'12s 后重试'}[state]||'空闲';
+ const chips={buffering:[['--amber','2026终端大卖 · 3 条'],['--amber','小系统版本风险AI评估 · 2 条']],jev:[['--violet','2026终端大卖 · 判断 3 条']],loading:[['--cyan','2026终端大卖 · Alpha 分页 1/2']],cpa:[['--cyan','2026终端大卖 · 47 条未读']],waiting:[['--grey','即时等待 1'],['--grey','定时等待 1']],retry:[['--orange','CPA 超时 · 第 2 次 · 新触发已保留']]}[state]||[];
+ $('detail').innerHTML=chips.map(c=>'<span class="chip" style="--c:var('+c[0]+')"><i></i>'+c[1]+'</span>').join('');
+ $('foot').textContent={idle:'全部处理完毕 · 上次摘要 11:25',paused:'已暂停监听',done:'已生成 1 条新关注'}[state]||'处理中 · 即时优先于定时';
+ updating=['loading','cpa'].includes(state)?'2026终端大卖':null;
+ renderList();tick();
+ $('note').textContent='当前：'+names[state]+'。'+s.note;
+ document.querySelectorAll('#btns button').forEach(b=>b.classList.toggle('sel',b.dataset.s===state));
+ measure();
+}
+function renderList(){
+ $('list').innerHTML=threads.length?threads.map((t,k)=>'<div class="row'+(k===0&&newRow?' new':'')+'"><div class="av" style="--hue:'+t.h+'">'+[...t.n][0]+'</div><div style="min-width:0"><div class="rt"><span class="name">'+t.n+'</span>'+(t.e.length>1?'<span class="badge">'+t.e.length+'</span>':'')+(updating===t.n?'<span class="updating"><span class="glyph"><span class="g-spin on"></span></span>正在更新</span>':'')+'<span class="sp"></span><span class="slot"><span class="time">'+t.e[0][0]+'</span><button class="read">本群已阅</button></span></div><div class="entries'+(t.e.length>1?' multi':'')+'">'+t.e.map(e=>'<div class="entry">'+(t.e.length>1?'<em>'+e[0]+'</em>':'')+e[1]+'</div>').join('')+'</div></div></div>').join(''):'<div class="empty">暂无待关注内容</div>';
+ newRow=false;
+}
+function tick(){
+ const v=$('g').querySelector('.g-ring .val'),pv=document.querySelector('#s-buf .val');
+ if(state==='buffering'){const left=Math.max(0,deadline-Date.now())/1000,f=left/total;
+  [v,pv].forEach(x=>x.style.strokeDashoffset=31.4*(1-f));$('wl').textContent=left.toFixed(1)+'s';$('bufp').style.width=(f*100)+'%';
+  $('d-buf').textContent='5 条 · '+left.toFixed(1)+'s 后提交';
+ }else{const s=S[state];$('wl').textContent=state==='waiting'?'等 2':state==='retry'?'12s':state==='cpa'?'1/3':s.label}
+}
+setInterval(()=>{if(state==='buffering'){tick();if(Date.now()>deadline&&!auto)go('buffering')}},100);
+function go(s){state=s;if(s==='buffering')deadline=Date.now()+total*1000;
+ if(s==='done'){threads[2].e.unshift(['11:32','赵珊珊确认审批结果改为签字完成后统一回调，@你 确认接口字段是否需要调整。']);threads.unshift(threads.splice(2,1)[0]);newRow=true;const c=$('cnt');c.classList.remove('bump');void c.offsetWidth;c.classList.add('bump')}
+ render()}
+$('btns').innerHTML=Object.keys(S).map(k=>'<button data-s="'+k+'">'+names[k]+'</button>').join('');
+$('btns').onclick=e=>{if(e.target.dataset.s){auto=false;go(e.target.dataset.s)}};
+let auto=false;
+$('auto').onclick=async()=>{auto=true;const seq=[['buffering',3000],['jev',1800],['loading',1200],['cpa',2200],['done',1600],['idle',0]];
+ for(const [s,t] of seq){if(!auto)return;go(s);await new Promise(r=>setTimeout(r,t))}auto=false};
+$('open').onchange=e=>{$('island').classList.toggle('open',e.target.checked);measure()};
+$('close').onclick=()=>{$('open').checked=false;$('island').classList.remove('open')};
+$('bar').onclick=()=>{$('open').checked=!$('open').checked;$('island').classList.toggle('open',$('open').checked);measure()};
+$('rm').onchange=e=>document.body.classList.toggle('reduce',e.target.checked);
+function measure(){const isl=$('island');const list=$('list');const inner=[...list.children].reduce((a,c)=>a+c.offsetHeight,0)+4;
+ const pipe=$('pipe').classList.contains('show')?$('pipe').firstElementChild.scrollHeight+9:0;
+ const h=Math.min(32+44+pipe+inner+38,window.innerHeight-170);isl.style.setProperty('--open-h',h+'px')}
+$('island').classList.add('open');render();window.onresize=measure;
+</script></body></html>

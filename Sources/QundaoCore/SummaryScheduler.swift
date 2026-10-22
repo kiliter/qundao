@@ -19,7 +19,7 @@ public struct SummaryMarker: Codable, Equatable {
     count = snapshot.messages.count; completedAt = now
   }
 }
-public struct SummaryJob: Codable, Identifiable {
+public struct SummaryJob: Codable, Identifiable, Equatable {
   public let scope: ConversationScope
   public var sources: Set<SummaryTrigger>
   public var enqueuedAt: Date
@@ -32,7 +32,7 @@ public struct SummaryJob: Codable, Identifiable {
     self.scope = scope; sources = [trigger]; enqueuedAt = now; retryAt = now
   }
 }
-public struct SummaryState: Codable {
+public struct SummaryState: Codable, Equatable {
   public var markers: [String: SummaryMarker] = [:]
   public var jobs: [String: SummaryJob] = [:]
   public init() {}
@@ -50,6 +50,8 @@ public struct SummaryCompletion {
   public private(set) var state: SummaryState
   public private(set) var active: [String: Task<Void, Never>] = [:]
   private var generation = UUID()
+  /// 批量扫描期间合并落盘与界面通知，结束时只保存一次。
+  private var batching = 0, batchDirty = false
   public var load: (ConversationScope) async throws -> UnreadSnapshot
   public var summarize: (UnreadSnapshot) async throws -> AIResult
   /// 同一次原子写入中保存摘要结果与成功标记；失败时不得更新内存标记。
@@ -77,8 +79,18 @@ public struct SummaryCompletion {
     } else { state.jobs[scope.key] = SummaryJob(scope: scope, trigger: trigger, now: now) }
     trace(existing == nil ? "摘要入队" : "同群触发合并", scope,
           ["来源": trigger.rawValue, "运行中": String(existing?.running ?? false), "待处理群数": "\(state.jobs.count)"])
-    savePending(); changed()
+    savePending(); notifyChanged()
   }
+  /// 在一次扫描内合并多个 enqueue / consider 的待办保存，避免逐群整份写盘与刷新界面。
+  public func batch(_ body: () throws -> Void) rethrows {
+    batching += 1
+    defer {
+      batching -= 1
+      if batching == 0, batchDirty { batchDirty = false; savePending(); changed() }
+    }
+    try body()
+  }
+  private func notifyChanged() { if batching == 0 { changed() } }
   public func consider(_ scope: ConversationScope, head: UnreadHead?) {
     guard isAllowed(scope) else { return }
     let old = state.markers[scope.key]?.lastMessageID
@@ -139,6 +151,7 @@ public struct SummaryCompletion {
     if removed { savePending(); changed() }
   }
   private func savePending() {
+    if batching > 0 { batchDirty = true; return }
     do { try persist(state, nil) }
     catch { trace("待办保存失败，内存保留待重试", nil, ["错误": error.localizedDescription]) }
   }

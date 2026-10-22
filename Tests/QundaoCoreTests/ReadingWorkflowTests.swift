@@ -53,7 +53,8 @@ final class ReadingWorkflowTests: XCTestCase {
     XCTAssertEqual(state.groups[0].unread, 10)
     let restored = try JSONDecoder().decode(AppSnapshot.self, from: JSONEncoder().encode(state))
     XCTAssertEqual(AttentionFeed.entries(attentions: restored.attentions, digests: restored.digests, account: "a").count, 1)
-    XCTAssertEqual(AttentionFeed.entries(attentions: restored.attentions, digests: restored.digests, account: "a", includeHistory: true).count, 3)
+    // 已处理提醒与摘要同一消息，并入摘要标签。
+    XCTAssertEqual(AttentionFeed.entries(attentions: restored.attentions, digests: restored.digests, account: "a", includeHistory: true).count, 2)
   }
   func testSummaryViewedDoesNotChangeAlphaOrIndependentlyPendingReminder() {
     var state = AppSnapshot()

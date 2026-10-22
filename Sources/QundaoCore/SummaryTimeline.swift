@@ -16,13 +16,15 @@ public enum SummaryTimeline {
   public static func threads(digests: [Digest], groups: [ChatGroup], account: String,
                              onlyRelated: Bool = false) -> [SummaryThread] {
     let scoped = digests.filter { $0.accountID == account && (!onlyRelated || $0.related) }
+    let groupIndex = Dictionary(groups.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
     return Dictionary(grouping: scoped, by: \.groupID).map { id, values in
-      let ordered = values.sorted {
-        if $0.messageDate != $1.messageDate { return $0.messageDate > $1.messageDate }
-        if $0.date != $1.date { return $0.date > $1.date }
-        return $0.id.uuidString < $1.id.uuidString
-      }
-      let group = groups.first { $0.id == id }
+      // messageDate 需遍历证据，先算一次再排序，避免比较器中重复计算。
+      let ordered = values.map { ($0, $0.messageDate) }.sorted {
+        if $0.1 != $1.1 { return $0.1 > $1.1 }
+        if $0.0.date != $1.0.date { return $0.0.date > $1.0.date }
+        return $0.0.id.uuidString < $1.0.id.uuidString
+      }.map(\.0)
+      let group = groupIndex[id]
       let latestUnread = (group?.unread ?? 0) > 0 ? group?.lastActivityTimestamp : nil
       return SummaryThread(id: id, digests: ordered, unread: group?.unread,
         messageDate: latestUnread.map { Date(timeIntervalSince1970: Double($0) / 1000) }

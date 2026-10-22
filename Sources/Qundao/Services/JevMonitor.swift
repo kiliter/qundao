@@ -7,12 +7,15 @@ import QundaoCore
   private var task: Task<Void, Never>?
   private var generation = UUID()
   init(store: AppStore) { self.store = store }
-  func receive(_ messages: [Message], scope: ConversationScope) {
+  func receive(_ messages: [Message], scope: ConversationScope, summaryTriggered: Bool = false) {
     guard let store, store.messageAdmission.allows(scope) else { return }
     let messages = messages.filter { store.messageAdmission.allows($0) && $0.groupID == scope.group }
     guard !messages.isEmpty else { return }
     if store.snapshot.decisionBatches == nil { store.snapshot.decisionBatches = [] }
-    store.snapshot.decisionBatches?.append(DecisionBatch(scope: scope, messages: messages))
+    var batch = DecisionBatch(scope: scope, messages: messages)
+    // 复用既有字段：表示本群摘要已由其他途径提交，Jev 结果不再重复触发群任务。
+    batch.fallbackTriggered = summaryTriggered
+    store.snapshot.decisionBatches?.append(batch)
   }
   func start() {
     stop()
@@ -35,7 +38,9 @@ import QundaoCore
           }
         }
         if !store.preferences.usesJev || store.jevKey.isEmpty {
-          store.decisionStatus = store.preferences.usesJev ? "Jev 未配置，使用本地识别" : "本地识别"
+          // 每 200ms 一轮；值相同不写，避免反复通知界面。
+          let status = store.preferences.usesJev ? "Jev 未配置，使用本地识别" : "本地识别"
+          if store.decisionStatus != status { store.decisionStatus = status }
         }
         try? await Task.sleep(nanoseconds: 200_000_000)
       }
@@ -61,6 +66,9 @@ import QundaoCore
     let prefs = store.preferences
     let selfID = store.activeAccount?.subjectID ?? ""
     let name = store.snapshot.groups.first(where: { $0.id == batch.scope.group })?.name ?? batch.scope.group
+    store.jevJudging = batch.scope.group
+    store.refreshActivity()
+    defer { store.jevJudging = nil; store.refreshActivity() }
     do {
       store.decisionStatus = "Jev 正在判断"
       let client = JevClient(key: store.jevKey, configuration: prefs.jevConfiguration, trace: { [weak store] in

@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct IslandSizeControls: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   private var minimum: Double { Double(NotchController.shared?.minimumCompactWidth ?? 140) }
   private var compact: Double { store.preferences.notchCompactWidth ?? minimum + 16 }
   var body: some View {
@@ -24,7 +24,9 @@ struct IslandSizeControls: View {
   private func widthControl(_ title: String, value: Binding<Double>, range: ClosedRange<Double>) -> some View {
     HStack(spacing: 16) {
       Text(title).frame(width: 65, alignment: .leading)
-      Slider(value: value, in: range, step: 2).accessibilityLabel(title)
+      // 不用 step：macOS 会为每个步进画刻度，160 个刻度让页面切换明显卡顿。改为写入时取偶数。
+      Slider(value: Binding(get: { value.wrappedValue }, set: { value.wrappedValue = ($0 / 2).rounded() * 2 }), in: range)
+        .accessibilityLabel(title)
       Text("\(Int(value.wrappedValue)) pt").monospacedDigit().foregroundStyle(.secondary).frame(width: 55, alignment: .trailing)
     }
   }

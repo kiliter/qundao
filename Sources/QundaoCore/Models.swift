@@ -47,7 +47,7 @@ public struct Message: Identifiable, Codable, Hashable {
   public var key: String { "\(accountID)|\(groupID)|\(id)" }
   public var date: Date { Date(timeIntervalSince1970: Double(timestamp) / 1000) }
 }
-public struct Attention: Identifiable, Codable {
+public struct Attention: Identifiable, Codable, Equatable {
   public var id: String
   public var message: Message
   public var groupName: String
@@ -66,7 +66,7 @@ public struct Attention: Identifiable, Codable {
     self.status = "pending"
   }
 }
-public struct Digest: Identifiable, Codable {
+public struct Digest: Identifiable, Codable, Equatable {
   public var id: UUID = UUID()
   public var accountID: String
   public var groupID: String
@@ -80,6 +80,9 @@ public struct Digest: Identifiable, Codable {
   /// 仅表示在群岛中已阅相关摘要，与 Alpha / 微信的消息已读状态相互独立。
   /// 可选字段让旧版本保存的相关摘要直接进入待关注列表。
   public var attentionReadAt: Date?
+  /// 被同群较新且证据完整包含本摘要的相关摘要覆盖（其 ID）；可选字段兼容旧数据。
+  /// 覆盖后不再待阅，也不计入小点，历史中保留。
+  public var supersededBy: UUID?
   public init(
     accountID: String, groupID: String, groupName: String, text: String, count: Int,
     evidence: [Message], related: Bool, relevanceReason: String
@@ -94,7 +97,7 @@ public struct Digest: Identifiable, Codable {
     self.evidence = evidence
   }
 }
-public struct Preferences: Codable {
+public struct Preferences: Codable, Equatable {
   public var accountID = ""
   public var selectedGroups: Set<String> = []
   public var groupsInitialized = false
@@ -137,7 +140,7 @@ public struct Preferences: Codable {
   public var decisionThreshold: Double { min(0.95, max(0.5, jevThreshold ?? 0.75)) }
   public init() {}
 }
-public struct Checkpoint: Codable {
+public struct Checkpoint: Codable, Equatable {
   public var after: Int64
   public var cursor: String?
   public var upper: Int64?
@@ -171,6 +174,8 @@ public struct AppSnapshot: Codable {
   public var decisionBatches: [DecisionBatch]?
   public var alphaRESTVersion: Int?
   public init() {}
+  /// 补算同群摘要覆盖关系；幂等，返回本次新标记数。只打标记，不删除摘要或日志。
+  @discardableResult public mutating func migrateDigestCoverage() -> Int { DigestCoverage.apply(&digests) }
   public mutating func migrateSummaryWorkflow() {
     guard summaryState == nil else { return }
     var state = SummaryState()

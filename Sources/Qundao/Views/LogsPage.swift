@@ -74,6 +74,8 @@ import SwiftUI
 }
 
 struct LogsPage: View {
+  /// 页面被保留但不可见时停止实时读取日志。
+  var active = true
   @StateObject private var browser = LogBrowser()
   var body: some View {
     VStack(spacing: 0) {
@@ -135,7 +137,7 @@ struct LogsPage: View {
         Button("回到最新") { Task { await browser.first(follow: true) } }.disabled(browser.loading)
       }.font(.caption).controlSize(.small).padding(14)
     }
-    .task { await browser.observeUpdates() }
+    .task(id: active) { if active { await browser.observeUpdates() } }
     .onChange(of: browser.live) { _, enabled in
       if enabled && browser.pageIndex == 0 { Task { await browser.first() } }
     }

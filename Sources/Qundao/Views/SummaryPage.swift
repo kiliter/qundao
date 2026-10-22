@@ -2,10 +2,11 @@ import QundaoCore
 import SwiftUI
 
 struct SummaryPage: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @State private var onlyRelated = false
   private var displayed: [Digest] { store.digests.filter { !onlyRelated || $0.related } }
   var body: some View {
+    let displayed = self.displayed
     VStack(spacing: 0) {
       HStack(spacing: 12) {
         Toggle("只看与我相关", isOn: $onlyRelated).toggleStyle(.checkbox).font(.caption)
@@ -24,32 +25,30 @@ struct SummaryPage: View {
           .disabled(!displayed.contains { $0.attentionReadAt == nil }).controlSize(.small)
       }.padding(.horizontal, 16).padding(.vertical, 11)
       Divider()
-      SummaryBrowser(selection: $store.summaryGroupID, onlyRelated: onlyRelated)
+      SummaryBrowser(selection: Bindable(store).summaryGroupID, onlyRelated: onlyRelated)
     }
   }
 }
 
 struct SummaryBrowser: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @Binding var selection: String?
   let onlyRelated: Bool
   var compact = false
   @State private var search = ""
-  private var threads: [SummaryThread] {
-    SummaryTimeline.threads(digests: store.digests, groups: store.snapshot.groups,
-                            account: store.preferences.accountID, onlyRelated: onlyRelated)
-  }
-  private var rows: [ConversationRow] {
+  private var threads: [SummaryThread] { store.summaryThreads(onlyRelated: onlyRelated) }
+  private func rows(_ threads: [SummaryThread]) -> [ConversationRow] {
     threads.map { thread in
       let latest = thread.digests[0]
       return ConversationRow(id: thread.id, name: latest.groupName, preview: latest.text, date: thread.messageDate,
                              count: thread.digests.count, related: false,
-                             unreadState: .wechat(store.groupUnreadCount(thread.id)), countLabel: "批摘要")
+                             unreadState: .wechat(!store.groupStatesSynced ? nil : thread.unread.map { max(0, $0) }), countLabel: "批摘要")
     }
   }
   var body: some View {
+    let threads = self.threads
     VStack(spacing: 0) {
-      ConversationBrowser(rows: rows, selection: $selection, search: $search,
+      ConversationBrowser(rows: rows(threads), selection: $selection, search: $search,
                           emptyTitle: onlyRelated ? "暂无相关摘要" : "暂无群聊摘要", compact: compact) { id in
         if let thread = threads.first(where: { $0.id == id }) {
           SummaryConversation(thread: thread, compact: compact).id(id)
@@ -62,7 +61,7 @@ struct SummaryBrowser: View {
 }
 
 private struct SummaryConversation: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   let thread: SummaryThread
   var compact = false
   private var pending: Int { thread.digests.filter { $0.attentionReadAt == nil }.count }

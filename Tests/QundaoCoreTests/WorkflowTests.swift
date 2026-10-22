@@ -79,6 +79,25 @@ final class WorkflowTests: XCTestCase {
     let state = body["state"] as! [String: Any]
     XCTAssertNotNil(state["待判断消息"])
   }
+  func testKeywordHitTriggersSummaryEvenWhenUsingJev() {
+    var prefs = Preferences()
+    prefs.keywords = ["无纸化"]
+    let decisions = RealtimeDecision.local([message("无纸化爆炸啦"), message("今天吃什么", id: "2")], preferences: prefs, selfID: "me",
+                                           semantic: { _ in true })
+    XCTAssertTrue(decisions[0].triggersSummary(usingJev: true))
+    XCTAssertTrue(decisions[0].triggersSummary(usingJev: false))
+    // 语义近似只是候选：Jev 模式交给 Jev，本地模式仍触发。
+    XCTAssertFalse(decisions[1].triggersSummary(usingJev: true))
+    XCTAssertTrue(decisions[1].triggersSummary(usingJev: false))
+  }
+  func testJevRequestMarksLocalKeywordHitsOnly() throws {
+    let data = try JevClient.requestBody(messages: [message("无纸化你有问喽"), message("收到", id: "2")], context: [],
+                                         names: [], keywords: ["无纸化"], selfID: "me", model: "jev-latest")
+    let state = (try JSONSerialization.jsonObject(with: data) as! [String: Any])["state"] as! [String: Any]
+    let rows = state["待判断消息"] as! [[String: Any]]
+    XCTAssertEqual(rows[0]["本地命中"] as? String, "涉及关注事项：无纸化")
+    XCTAssertNil(rows[1]["本地命中"])
+  }
   func testJevPendingAndIslandSettingsSurviveRestart() throws {
     var state = AppSnapshot()
     state.preferences.decisionMethod = "jev"

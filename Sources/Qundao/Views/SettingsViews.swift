@@ -2,7 +2,7 @@ import QundaoCore
 import SwiftUI
 
 struct RulesPage: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   @State private var name = ""
   @State private var keyword = ""
   var body: some View {
@@ -80,7 +80,7 @@ struct RulesPage: View {
   }
 }
 struct AppearancePage: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   var body: some View {
     PageHeading(title: "刘海与通知", subtitle: "刘海只展示与你相关的提醒和群聊摘要，无关内容留在主窗口。")
     SoftCard {
@@ -126,7 +126,8 @@ struct AppearancePage: View {
   }
 }
 struct ConnectionPage: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
+  @Environment(\.pageActive) private var pageActive
   @State private var alpha = ""
   @State private var cpa = ""
   @State private var notice = ""
@@ -205,12 +206,15 @@ struct ConnectionPage: View {
         }
       }
       JevConnectionCard()
-      Text("密钥保存到 macOS 钥匙串。开始监听后，仅白名单群的未读消息会在周期摘要时发送至 CPA；即时命中后也发送该群当时的完整未读。私聊和白名单外群聊在入口丢弃。诊断日志会保存白名单群入参和出参中的聊天正文，令牌和模型密钥会隐藏。").font(
+      Text("密钥保存在 ~/.config/qundao/config.toml（仅本人可读，权限 600），也可直接编辑该文件，保存后自动生效。开始监听后，仅白名单群的未读消息会在周期摘要时发送至 CPA；即时命中后也发送该群当时的完整未读。私聊和白名单外群聊在入口丢弃。诊断日志会保存白名单群入参和出参中的聊天正文，令牌和模型密钥会隐藏。").font(
         .caption
       ).foregroundStyle(.secondary)
     }.onAppear {
       alpha = store.alphaToken
       cpa = store.cpaKey
+    }.onChange(of: pageActive) { _, active in
+      // 页面保留后不会再次 onAppear；重新显示时从当前配置刷新。
+      if active { alpha = store.alphaToken; cpa = store.cpaKey }
     }.onChange(of: store.loadingCredentials) { _, loading in
       if !loading { if alpha.isEmpty { alpha = store.alphaToken }; if cpa.isEmpty { cpa = store.cpaKey } }
     }

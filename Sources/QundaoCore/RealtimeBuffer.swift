@@ -1,6 +1,6 @@
 import Foundation
 
-public struct BufferedMessage: Codable {
+public struct BufferedMessage: Codable, Equatable {
   public let message: Message
   public let receivedAt: Date
 }
@@ -9,7 +9,7 @@ public struct RealtimeFlush {
   public let messages: [Message]
   public let reason: String
 }
-public struct RealtimeBuffer: Codable {
+public struct RealtimeBuffer: Codable, Equatable {
   public private(set) var entries: [String: BufferedMessage] = [:]
   public init() {}
   public mutating func receive(_ message: Message, now: Date = Date()) {
@@ -41,7 +41,7 @@ public struct RealtimeBuffer: Codable {
     return result
   }
 }
-public struct DecisionBatch: Codable, Identifiable {
+public struct DecisionBatch: Codable, Identifiable, Equatable {
   public var id = UUID()
   public var scope: ConversationScope
   public var messages: [Message]
@@ -56,6 +56,9 @@ public struct LocalDecision {
   public let match: RuleMatch
   public let semantic: Bool
   public var related: Bool { match != .none || semantic }
+  /// 正文直接命中称呼或关注关键词（含明确 @）属于用户配置的确定信号，任何判断方式下都直接提交摘要；
+  /// 系统语义近似只是候选，启用 Jev 时交给 Jev 判断。
+  public func triggersSummary(usingJev: Bool) -> Bool { match != .none || (!usingJev && semantic) }
 }
 public enum RealtimeDecision {
   public static func local(_ messages: [Message], preferences: Preferences, selfID: String,
@@ -66,5 +69,41 @@ public enum RealtimeDecision {
       return LocalDecision(message: message, match: match,
                            semantic: !own && match == .none && preferences.semanticEnabled && semantic(message.text))
     }
+  }
+}
+/// 缓冲区当前账号的只读概况，用于界面显示等待时间；不改变缓冲内容。
+public struct BufferStatus: Equatable {
+  public struct Group: Equatable {
+    public let group: String
+    public let count: Int
+    /// 首条到达时间 + 等待间隔；新消息不会移动截止时间。
+    public let deadline: Date
+  }
+  public let count: Int
+  public let capacity: Int
+  public let groups: [Group]
+  /// 最早到期的群；容量已满时下一轮立即提交。
+  public var deadline: Date? { groups.map(\.deadline).min() }
+  public var isEmpty: Bool { count == 0 }
+  public static let empty = BufferStatus(count: 0, capacity: 1, groups: [])
+}
+extension RealtimeBuffer {
+  public func status(account: String, capacity: Int, interval: TimeInterval) -> BufferStatus {
+    let current = entries.values.filter { $0.message.accountID == account }
+    guard !current.isEmpty else { return BufferStatus(count: 0, capacity: max(1, capacity), groups: []) }
+    let wait: TimeInterval = max(0.1, interval)
+    var first: [String: Date] = [:], counts: [String: Int] = [:]
+    for entry in current {
+      let id = entry.message.groupID
+      counts[id, default: 0] += 1
+      if let old = first[id], old <= entry.receivedAt { continue }
+      first[id] = entry.receivedAt
+    }
+    var groups: [BufferStatus.Group] = []
+    for (id, start) in first {
+      groups.append(BufferStatus.Group(group: id, count: counts[id] ?? 0, deadline: start.addingTimeInterval(wait)))
+    }
+    groups.sort { $0.deadline == $1.deadline ? $0.group < $1.group : $0.deadline < $1.deadline }
+    return BufferStatus(count: current.count, capacity: max(1, capacity), groups: groups)
   }
 }

@@ -2,7 +2,7 @@ import QundaoCore
 import SwiftUI
 
 struct DecisionSettings: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
   var body: some View {
     SoftCard {
       Text("判断方式").font(.headline)
@@ -18,8 +18,9 @@ struct DecisionSettings: View {
       if store.preferences.usesJev {
         HStack {
           Text("Jev 提醒阈值")
+          // 不用 step：macOS 会为步进绘制刻度，每次进入页面都要重建刻度缓存。写入时取 0.05 的倍数。
           Slider(value: Binding(get: { store.preferences.decisionThreshold },
-                               set: { value in store.update { $0.jevThreshold = value } }), in: 0.5...0.95, step: 0.05)
+                               set: { value in store.update { $0.jevThreshold = (value * 20).rounded() / 20 } }), in: 0.5...0.95)
           Text("\(Int(store.preferences.decisionThreshold * 100))%").monospacedDigit().frame(width: 36)
         }
         Text("较低阈值会保留更多候选。模型概率不代表一定有人找你；网络故障时回退本地筛选并保留重试。")
@@ -37,7 +38,8 @@ struct DecisionSettings: View {
 }
 
 struct JevConnectionCard: View {
-  @EnvironmentObject var store: AppStore
+  @Environment(AppStore.self) var store
+  @Environment(\.pageActive) private var pageActive
   @State private var key = ""
   @State private var baseURL = JevConfiguration.openRouter.baseURL
   @State private var api = JevAPI.decisions
@@ -101,9 +103,13 @@ struct JevConnectionCard: View {
         Link("OpenRouter 文档", destination: URL(string: "https://openrouter.ai/docs/guides/community/jev")!).font(.caption)
       }
       if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(.secondary).textSelection(.enabled) }
-      Text("地址、协议、模型与密钥在保存后一起生效。白名单新消息及必要上下文会发送至已保存的决策服务；密钥独立保存在钥匙串。")
+      Text("地址、协议、模型与密钥在保存后一起生效。白名单新消息及必要上下文会发送至已保存的决策服务；密钥保存在 ~/.config/qundao/config.toml。")
         .font(.caption).foregroundStyle(.secondary)
     }.onAppear { key = store.jevKey; apply(store.preferences.jevConfiguration) }
+      // 页面保留后不会再次 onAppear；重新显示时从当前配置刷新。
+      .onChange(of: pageActive) { _, active in
+        if active { key = store.jevKey; apply(store.preferences.jevConfiguration) }
+      }
       .onChange(of: store.loadingCredentials) { _, loading in
         if !loading, key.isEmpty { key = store.jevKey }
       }
