@@ -18,6 +18,9 @@ swift build -c "$CONFIG" --scratch-path .build
 BUILD_DIR="$(swift build -c "$CONFIG" --scratch-path .build --show-bin-path)"
 mkdir -p "$APP_BUNDLE/Contents/MacOS" "$APP_BUNDLE/Contents/Resources"
 cp "$BUILD_DIR/$APP_NAME" "$APP_BUNDLE/Contents/MacOS/$APP_NAME"
+if [[ ! -f "$ROOT_DIR/Resources/AppIcon.icns" || "$ROOT_DIR/script/make_icon.swift" -nt "$ROOT_DIR/Resources/AppIcon.icns" ]]; then
+  swift "$ROOT_DIR/script/make_icon.swift" "$ROOT_DIR/Resources"
+fi
 if [[ -f "$ROOT_DIR/Resources/AppIcon.icns" ]]; then cp "$ROOT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/"; fi
 cat > "$APP_BUNDLE/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
@@ -46,6 +49,9 @@ if [[ "$MODE" == "--build-only" ]]; then
 fi
 /usr/bin/ditto "$APP_BUNDLE" "$INSTALLED_BUNDLE"
 /usr/bin/codesign --verify --deep --strict "$INSTALLED_BUNDLE"
+# 更新本应用的资源修改时间与注册信息，让 Finder / Dock 重新读取图标。
+/usr/bin/touch "$INSTALLED_BUNDLE"
+/System/Library/Frameworks/CoreServices.framework/Frameworks/LaunchServices.framework/Support/lsregister -f "$INSTALLED_BUNDLE"
 case "$MODE" in
   run|--verify) /usr/bin/open -n "$INSTALLED_BUNDLE" ;;
   --debug) /usr/bin/lldb -- "$INSTALLED_BUNDLE/Contents/MacOS/$APP_NAME" ;;

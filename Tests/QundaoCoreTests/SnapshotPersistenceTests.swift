@@ -60,6 +60,33 @@ final class SnapshotPersistenceTests: XCTestCase {
     XCTAssertNil(state.summaryState)
   }
 
+  func testDockVisibilitySurvivesRestartWithoutChangingAutoListen() throws {
+    let directory = tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = SnapshotPersistence(directory: directory)
+    var state = AppSnapshot()
+    state.preferences.autoStart = true
+    for hidden in [true, false] {
+      state.preferences.hideDockIcon = hidden
+      try disk.save(state)
+      let restored = try SnapshotPersistence(directory: directory).load()
+      XCTAssertEqual(restored.preferences.hidesDockIcon, hidden)
+      XCTAssertTrue(restored.preferences.autoStart)
+    }
+  }
+
+  func testLegacyPreferencesWithoutDockFieldRemainReadable() throws {
+    var state = AppSnapshot()
+    state.preferences.autoStart = true
+    state.preferences.selectedGroups = ["合成群@chatroom"]
+    let legacy = try JSONEncoder().encode(state)
+    let restored = try JSONDecoder().decode(AppSnapshot.self, from: legacy)
+    XCTAssertNil(restored.preferences.hideDockIcon)
+    XCTAssertFalse(restored.preferences.hidesDockIcon)
+    XCTAssertTrue(restored.preferences.autoStart)
+    XCTAssertEqual(restored.preferences.selectedGroups, state.preferences.selectedGroups)
+  }
+
   func testLegacyJSONImportedOnceAndBackedUpWithoutLoss() throws {
     let directory = tempDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

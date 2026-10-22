@@ -32,6 +32,10 @@ import UserNotifications
         store.page = .rules
         delegate.showMain()
       }
+      Button("刘海与通知") {
+        store.page = .appearance
+        delegate.showMain()
+      }
       Button("运行日志") {
         store.page = .logs
         delegate.showMain()
@@ -53,7 +57,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   private var wakeObserver: NSObjectProtocol?
   func applicationDidFinishLaunching(_ notification: Notification) {
     Self.shared = self
-    NSApp.setActivationPolicy(.regular)
+    NSApp.setActivationPolicy(AppStore.shared.preferences.hidesDockIcon ? .accessory : .regular)
     UNUserNotificationCenter.current().delegate = self
     notch = NotchController(store: AppStore.shared)
     wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
@@ -76,10 +80,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         NSApp.windows.first { $0.title == "群岛" && !($0 is NSPanel) } ?? self.mainWindow
     }
   }
+  /// AppKit 只负责应用激活策略；成功后才把选择写入现有偏好存储。
+  @discardableResult
+  func setDockIconHidden(_ hidden: Bool) -> Bool {
+    let visibleWindows = NSApp.windows.filter(\.isVisible)
+    let keyWindow = NSApp.keyWindow
+    let wasActive = NSApp.isActive
+    guard NSApp.setActivationPolicy(hidden ? .accessory : .regular) else { return false }
+    AppStore.shared.update { $0.hideDockIcon = hidden }
+    // 切换激活策略可能重排窗口；保留已打开的窗口和刘海，不强制显示已关闭窗口。
+    DispatchQueue.main.async {
+      for window in visibleWindows { window.orderFront(nil) }
+      if wasActive {
+        NSApp.activate(ignoringOtherApps: true)
+        keyWindow?.makeKeyAndOrderFront(nil)
+      }
+    }
+    return true
+  }
   func showMain() {
     captureWindow()
     NSApp.activate(ignoringOtherApps: true)
     if let mainWindow {
+      if mainWindow.isMiniaturized { mainWindow.deminiaturize(nil) }
       mainWindow.makeKeyAndOrderFront(nil)
     } else {
       NSApp.windows.first(where: { !($0 is NSPanel) })?.makeKeyAndOrderFront(nil)

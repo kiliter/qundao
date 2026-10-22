@@ -116,9 +116,7 @@ struct AppearancePage: View {
         }
         Text("免打扰期间继续整理摘要，不弹出刘海和系统通知。").font(.caption).foregroundStyle(.secondary)
         Divider().padding(.vertical, 4)
-        P5SectionTitle("启动行为")
-        Toggle("下次打开应用时自动恢复监听", isOn: binding(\.autoStart))
-        Text("恢复监听会按已选账号和规则工作，不修改微信的已读状态。").font(.caption).foregroundStyle(.secondary)
+        StartupSettings()
       }
     }.toggleStyle(.switch).controlSize(.small)
   }

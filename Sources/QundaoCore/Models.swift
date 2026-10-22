@@ -115,6 +115,9 @@ public struct Preferences: Codable, Equatable {
   public var autoExpand = true
   public var dndUntil: Date?
   public var autoStart = false
+  // 旧状态没有此字段时继续显示 Dock 图标。
+  public var hideDockIcon: Bool?
+  public var hidesDockIcon: Bool { hideDockIcon ?? false }
   // 可选字段保证旧版状态可以直接读取；宽度为空时使用适配屏幕的默认值。
   public var whitelistVersion: Int? = 2
   public var previousSelectedGroups: Set<String>?
