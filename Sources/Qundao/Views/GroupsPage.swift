@@ -3,6 +3,7 @@ import SwiftUI
 
 struct GroupsPage: View {
   @Environment(AppStore.self) var store
+  @Environment(\.controlActiveState) private var controlActiveState
   @State private var search = ""
   @State private var selection: Set<String> = []
   @State private var sortOrder = [KeyPathComparator(\ChatGroup.name)]
@@ -20,15 +21,9 @@ struct GroupsPage: View {
       if map[digest.groupID] == nil { map[digest.groupID] = digest.date }
     }
     VStack(spacing: 0) {
-      HStack(alignment: .top, spacing: 20) {
-        VStack(alignment: .leading, spacing: 6) {
-          Text("监听白名单").font(.title3.weight(.semibold))
-          Text("仅处理白名单群的消息，适用于即时识别、周期摘要和手动生成。")
-            .font(.caption).foregroundStyle(.secondary)
-        }
-        Spacer()
-        Button("添加群聊", systemImage: "plus") { adding = true }.buttonStyle(.borderedProminent)
-      }.padding(20)
+      P5PageHeader(title: "监听群聊", subtitle: "只处理白名单内的群，重要的事不漏看。") {
+        Button("添加群聊", systemImage: "plus") { adding = true }.buttonStyle(P5ButtonStyle(kind: .primary))
+      }
       HStack(spacing: 12) {
         SearchBox(placeholder: "搜索白名单", text: $search).frame(maxWidth: 350)
         Spacer()
@@ -38,34 +33,39 @@ struct GroupsPage: View {
         }.disabled(selection.isEmpty)
         Button { Task { await store.connect() } } label: { Image(systemName: "arrow.clockwise") }
           .disabled(store.busy).help("刷新群列表")
-      }.padding(.horizontal, 20).padding(.bottom, 14)
+      }.padding(.horizontal, 20).padding(.vertical, 14)
       Divider()
       Table(groups, selection: $selection, sortOrder: $sortOrder) {
         TableColumn("群聊", value: \.name) { group in
           HStack(spacing: 10) {
-            GroupAvatar(name: group.name, size: 27)
+            GroupAvatar(name: group.name, size: 27, selected: selected(group))
             Text(group.name).lineLimit(1).help(group.name)
+              .foregroundStyle(selected(group) ? .white : P5.ink)
           }.padding(.vertical, 5)
         }.width(min: 220, ideal: 360)
         TableColumn("微信未读", value: \.unread) { group in
-          Text(group.unread.formatted()).monospacedDigit().foregroundStyle(.secondary)
+          Text(group.unread.formatted()).monospacedDigit()
+            .foregroundStyle(selected(group) ? .white : P5.secondary)
         }.width(80)
-        TableColumn("即时识别") { _ in
-          Label("已开启", systemImage: "checkmark.circle.fill").font(.caption).foregroundStyle(.green)
+        TableColumn("即时识别") { group in
+          Label("已开启", systemImage: "checkmark.circle.fill").font(.caption)
+            .foregroundStyle(selected(group) ? .white : Color.green)
         }.width(85)
         TableColumn("最近摘要") { group in
           if let date = latest[group.id] {
-            Text(date, format: .dateTime.month().day().hour().minute()).font(.caption).foregroundStyle(.secondary)
-          } else { Text("暂无").font(.caption).foregroundStyle(.tertiary) }
+            Text(date, format: .dateTime.month().day().hour().minute()).font(.caption)
+              .foregroundStyle(selected(group) ? .white : P5.secondary)
+          } else { Text("暂无").font(.caption).foregroundStyle(selected(group) ? .white : P5.grey) }
         }.width(min: 100, ideal: 130)
       }
+      .scrollContentBackground(.hidden).background(.white)
       .overlay {
         if groups.isEmpty {
           VStack(spacing: 16) {
             ContentUnavailableView(search.isEmpty ? "添加你想关注的群" : "没有匹配的群聊",
               systemImage: "person.2.badge.plus",
               description: Text(search.isEmpty ? "白名单默认不全选。打开群列表，按需勾选添加。" : "这里只搜索已加入白名单的群。"))
-            if search.isEmpty { Button("添加群聊") { adding = true }.buttonStyle(.bordered) }
+            if search.isEmpty { Button("添加群聊") { adding = true }.buttonStyle(P5ButtonStyle()) }
           }.frame(maxWidth: .infinity, maxHeight: .infinity)
         }
       }
@@ -79,6 +79,9 @@ struct GroupsPage: View {
     }
     .sheet(isPresented: $adding) { AddGroupsSheet().environment(store) }
     .onChange(of: groups.map(\.id)) { _, ids in selection.formIntersection(ids) }
+  }
+  private func selected(_ group: ChatGroup) -> Bool {
+    selection.contains(group.id) && controlActiveState != .inactive
   }
 }
 
@@ -97,7 +100,7 @@ private struct AddGroupsSheet: View {
     VStack(alignment: .leading, spacing: 16) {
       HStack {
         VStack(alignment: .leading, spacing: 5) {
-          Text("添加到监听白名单").font(.title2.weight(.semibold))
+          P5Ransom(text: "添加群聊", scale: 1.35)
           Text("直接勾选要监听的群聊，也可搜索筛选。")
             .font(.caption).foregroundStyle(.secondary)
         }
@@ -134,9 +137,11 @@ private struct AddGroupsSheet: View {
         Button("添加已选 \(selected.count) 个群") {
           store.setWhitelist(store.preferences.selectedGroups.union(selected))
           dismiss()
-        }.buttonStyle(.borderedProminent).disabled(selected.isEmpty).keyboardShortcut(.defaultAction)
+        }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(selected.isEmpty).keyboardShortcut(.defaultAction)
       }
-    }.padding(22).frame(width: 640, height: 500)
+    }.padding(22).frame(width: 680, height: 520)
+      .background(P5.mainPaper).foregroundStyle(P5.ink).tint(P5.red)
+      .buttonStyle(P5ButtonStyle(compact: true)).preferredColorScheme(.light)
       .onChange(of: store.groups.map(\.id)) { _, ids in selected.formIntersection(ids) }
   }
 }

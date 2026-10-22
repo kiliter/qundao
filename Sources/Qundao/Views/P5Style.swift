@@ -9,6 +9,8 @@ enum P5 {
   static let ink = Color(red: 0.067, green: 0.067, blue: 0.067)
   static let dark = Color(white: 0.11)
   static let grey = Color(white: 0.55)
+  static let secondary = Color(white: 0.39)
+  static let mainPaper = Color(red: 0.953, green: 0.945, blue: 0.922)
   /// 斜切与旋转是静态装饰，减少动态效果时同样保留；动画另由调用方按设置关闭。
   static let snap = Animation.timingCurve(0.7, 0, 0.2, 1, duration: 0.32)
   static let pop = Animation.spring(duration: 0.3, bounce: 0.45)
@@ -180,6 +182,7 @@ struct P5Backdrop: View {
 /// 剪报拼贴标题：每个字一块，底色、字号、角度各不相同。
 struct P5Ransom: View {
   let text: String
+  var scale: CGFloat = 1
   private static let styles: [(bg: Color, fg: Color, size: CGFloat, angle: Double, dy: CGFloat)] = [
     (.white, .black, 18, -6, 0), (.black, .white, 14.5, 4, -2), (P5.red, .white, 19, -3, 1), (.white, P5.red, 15.5, 7, 0),
   ]
@@ -187,12 +190,12 @@ struct P5Ransom: View {
     HStack(alignment: .bottom, spacing: 2) {
       ForEach(Array(text.enumerated()), id: \.offset) { index, char in
         let style = Self.styles[index % Self.styles.count]
-        Text(String(char)).font(P5.heavy(style.size)).foregroundStyle(style.fg)
-          .padding(.horizontal, 3.5).padding(.vertical, 2.5)
+        Text(String(char)).font(P5.heavy(style.size * scale)).foregroundStyle(style.fg)
+          .padding(.horizontal, 3.5 * scale).padding(.vertical, 2.5 * scale)
           .background(style.bg)
           .overlay { if style.bg == .black { Rectangle().stroke(.white, lineWidth: 1.5) } }
           .rotationEffect(.degrees(style.angle))
-          .offset(y: style.dy)
+          .offset(y: style.dy * scale)
       }
     }
     .accessibilityElement(children: .ignore)

@@ -8,6 +8,18 @@ struct SummaryPage: View {
   var body: some View {
     let displayed = self.displayed
     VStack(spacing: 0) {
+      P5PageHeader(title: "群聊摘要", subtitle: "未读消息的来龙去脉，一起看清。") {
+        HStack(spacing: 10) {
+          Button("生成未读摘要", systemImage: "sparkles") { store.requestAllAnalysis() }
+            .buttonStyle(P5ButtonStyle(kind: .primary))
+            .help("检查白名单群的完整未读，有新增才生成摘要；不改变微信已读状态")
+            .disabled(!store.running || !store.preferences.aiEnabled || store.preferences.selectedGroups.isEmpty)
+          Button("一键已阅", systemImage: "checkmark") { store.readSummaries(displayed) }
+            .buttonStyle(P5ButtonStyle())
+            .help("将当前筛选范围的全部摘要标记已阅；不改变微信未读")
+            .disabled(!displayed.contains { $0.attentionReadAt == nil })
+        }
+      }
       HStack(spacing: 12) {
         Toggle("只看与我相关", isOn: $onlyRelated).toggleStyle(.checkbox).font(.caption)
         Spacer()
@@ -16,14 +28,8 @@ struct SummaryPage: View {
           Text("每 5 分钟").tag(5)
           Text("每 15 分钟").tag(15)
           Text("每 30 分钟").tag(30)
-        }.frame(width: 155).controlSize(.small)
-        Button("生成未读摘要", systemImage: "sparkles") { store.requestAllAnalysis() }
-          .help("立即检查当前账号白名单群的未读消息，有新增才生成摘要；不改变微信已读状态")
-          .disabled(!store.running || !store.preferences.aiEnabled || store.preferences.selectedGroups.isEmpty).controlSize(.small)
-        Button("一键已阅", systemImage: "checkmark.circle") { store.readSummaries(displayed) }
-          .help("将当前筛选范围的全部摘要标记已阅；不改变微信未读")
-          .disabled(!displayed.contains { $0.attentionReadAt == nil }).controlSize(.small)
-      }.padding(.horizontal, 16).padding(.vertical, 11)
+        }.frame(width: 170).controlSize(.small)
+      }.padding(.horizontal, 20).padding(.vertical, 10)
       Divider()
       SummaryBrowser(selection: Bindable(store).summaryGroupID, onlyRelated: onlyRelated)
     }
@@ -68,6 +74,7 @@ private struct SummaryConversation: View {
   var body: some View {
     VStack(spacing: 0) {
       HStack(spacing: 8) {
+        if !compact { GroupAvatar(name: thread.digests.first?.groupName ?? "群", size: 34) }
         VStack(alignment: .leading, spacing: 5) {
           Text(thread.digests.first?.groupName ?? "群聊")
             .font(compact ? .caption.bold() : .headline).lineLimit(1)
@@ -77,7 +84,7 @@ private struct SummaryConversation: View {
         Spacer(minLength: 4)
         if !compact {
           Button("本群已阅") { store.readSummaries(thread.digests) }
-            .buttonStyle(.borderless).font(.caption).disabled(pending == 0)
+            .buttonStyle(P5ButtonStyle(compact: true)).disabled(pending == 0)
             .help("将本群摘要标记已阅，不改变微信未读")
         }
       }.padding(compact ? 10 : 18)
@@ -99,6 +106,7 @@ struct ChatTranscript: View {
   let messages: [Message]
   let selfID: String
   var highlightedID: String? = nil
+  var highlightedIDs: Set<String> = []
   var startAtLatest = false
   var compact = false
   var body: some View {
@@ -111,6 +119,7 @@ struct ChatTranscript: View {
           }
           ForEach(messages, id: \.key) { message in
             let mine = !selfID.isEmpty && message.senderID == selfID
+            let highlighted = message.id == highlightedID || highlightedIDs.contains(message.id)
             HStack(alignment: .top, spacing: 9) {
               if mine { Spacer(minLength: compact ? 0 : 45) }
               if !mine { GroupAvatar(name: message.sender.isEmpty ? "群" : message.sender, size: compact ? 20 : 28) }
@@ -121,10 +130,10 @@ struct ChatTranscript: View {
                   .font(.system(size: compact ? 12 : 13)).lineSpacing(4).textSelection(.enabled)
                   .padding(.horizontal, 13).padding(.vertical, 10)
                   .foregroundStyle(mine ? Color.white : Color.primary)
-                  .background(mine ? Color.indigo : Color.primary.opacity(0.055),
-                              in: RoundedRectangle(cornerRadius: 13))
-                  .overlay(RoundedRectangle(cornerRadius: 13)
-                    .stroke(message.id == highlightedID ? Color.indigo : .clear, lineWidth: 1.5))
+                  .background(mine ? P5.ink : Color.white)
+                  .overlay(Rectangle()
+                    .stroke(highlighted ? P5.red : P5.ink.opacity(0.2), lineWidth: highlighted ? 2 : 1))
+                  .background((mine ? P5.red : P5.ink.opacity(0.12)).offset(x: 3, y: 3))
               }
               if !mine { Spacer(minLength: compact ? 0 : 45) }
               if mine { GroupAvatar(name: "我", size: compact ? 20 : 28) }

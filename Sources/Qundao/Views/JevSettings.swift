@@ -4,8 +4,8 @@ import SwiftUI
 struct DecisionSettings: View {
   @Environment(AppStore.self) var store
   var body: some View {
-    SoftCard {
-      Text("判断方式").font(.headline)
+    P5PaperCard {
+      P5SectionTitle("判断方式")
       Picker("即时相关性判断", selection: Binding(get: { store.preferences.decisionMethod ?? "local" },
         set: { value in store.update { $0.decisionMethod = value } })) {
         Text("本地识别").tag("local")
@@ -51,9 +51,9 @@ struct JevConnectionCard: View {
                      model: model.trimmingCharacters(in: .whitespacesAndNewlines))
   }
   var body: some View {
-    SoftCard {
+    P5PaperCard {
       HStack {
-        Text("决策模型 · Jev").font(.headline)
+        P5SectionTitle("决策模型 · Jev")
         Spacer()
         Menu("填入预设") {
           Button("OpenRouter") { apply(.openRouter) }
@@ -63,15 +63,15 @@ struct JevConnectionCard: View {
       Text("支持 OpenRouter、TypeSafe 及兼容代理。摘要内容仍由 CPA 生成。")
         .font(.caption).foregroundStyle(.secondary)
       LabeledContent("Base URL") {
-        TextField("https://openrouter.ai/api", text: $baseURL).textFieldStyle(.roundedBorder)
+        TextField("https://openrouter.ai/api", text: $baseURL).textFieldStyle(P5TextFieldStyle())
       }
       Picker("接口协议", selection: $api) {
         ForEach(JevAPI.allCases, id: \.self) { Text($0.title).tag($0) }
       }
       LabeledContent("模型") {
-        TextField("~typesafe/jev-latest", text: $model).textFieldStyle(.roundedBorder)
+        TextField("~typesafe/jev-latest", text: $model).textFieldStyle(P5TextFieldStyle())
       }
-      SecureField("决策服务 API Key", text: $key).textFieldStyle(.roundedBorder)
+      SecureField("决策服务 API Key", text: $key).textFieldStyle(P5TextFieldStyle())
       if let endpoint = try? config.endpoint() {
         Text("请求地址：\(endpoint.absoluteString)").font(.caption.monospaced())
           .foregroundStyle(.secondary).textSelection(.enabled)
@@ -97,7 +97,7 @@ struct JevConnectionCard: View {
               store.log.write("信息", "Jev 合成消息连接测试通过")
             } catch { notice = error.localizedDescription }
           }
-        }.buttonStyle(.borderedProminent).disabled(testing || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(testing || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         if testing { ProgressView().controlSize(.small) }
         Spacer()
         Link("OpenRouter 文档", destination: URL(string: "https://openrouter.ai/docs/guides/community/jev")!).font(.caption)

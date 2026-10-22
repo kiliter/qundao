@@ -46,20 +46,21 @@ import SwiftUI
   }
   var notchWidth: CGFloat { metrics.notchWidth }
   var barHeight: CGFloat { metrics.barHeight }
-  var minimumCompactWidth: CGFloat { metrics.hasNotch ? notchWidth + 56 : 140 }
-  /// 处理中时收起态两翼加宽，留出阶段标签（倒计时、Jev、摘要等）。
-  static let activeExtraWidth: CGFloat = 52
+  var barLayout: NotchBarLayout {
+    NotchBarLayout(centerWidth: metrics.hasNotch ? notchWidth : 50,
+                   screenWidth: metrics.frame.width, hasNotch: metrics.hasNotch,
+                   preferredCompactWidth: store.preferences.notchCompactWidth,
+                   preferredExpandedWidth: store.preferences.notchExpandedWidth,
+                   active: store.activity.phase.isActive, count: store.pendingFocusCount)
+  }
+  var minimumCompactWidth: CGFloat { barLayout.minimumCompactWidth }
+  var barWidth: CGFloat { barLayout.barWidth(expanded: expanded) }
   /// 展开面板固定区：剪报标题、状态条、底栏。
   static let headerHeight: CGFloat = 64
   static let statusHeight: CGFloat = 46
   static let footerHeight: CGFloat = 38
-  var compactWidth: CGFloat {
-    let base = max(minimumCompactWidth, store.preferences.notchCompactWidth ?? Double(minimumCompactWidth + 16))
-    return min(base + (store.activity.phase.isActive ? Self.activeExtraWidth : 0), metrics.frame.width - 24)
-  }
-  var expandedWidth: CGFloat {
-    min(max(360, store.preferences.notchExpandedWidth ?? 440), metrics.frame.width - 24)
-  }
+  var compactWidth: CGFloat { barLayout.compactWidth }
+  var expandedWidth: CGFloat { barLayout.expandedWidth }
   /// 列表实测高度（展开某群后会变高）；尚未测量时按行数估算。
   @ObservationIgnored private(set) var measuredListHeight: CGFloat?
   var maxListHeight: CGFloat {
@@ -104,6 +105,7 @@ import SwiftUI
     let content = NSHostingView(rootView: AnyView(NotchExpandedContent(controller: self).environment(store)))
     for host in [bar, content] {
       host.sizingOptions = []
+      host.safeAreaRegions = []
       host.wantsLayer = true
       host.layer?.backgroundColor = .clear
       host.appearance = NSAppearance(named: .darkAqua)
@@ -153,7 +155,7 @@ import SwiftUI
   /// 宽度设置与行数变化时调整形状；用 Observation 跟踪，不依赖某个视图是否在显示。
   private func observeSizes() {
     withObservationTracking {
-      _ = compactWidth; _ = expandedWidth; _ = store.pendingAttention.threads.count
+      _ = compactWidth; _ = expandedWidth; _ = barWidth; _ = store.pendingAttention.threads.count
     } onChange: { [weak self] in
       Task { @MainActor in
         guard let self else { return }
@@ -184,7 +186,7 @@ import SwiftUI
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     if panel.frame != frame { panel.setFrame(frame, display: false) }
-    container.place(barSize: CGSize(width: compactWidth, height: barHeight),
+    container.place(barSize: CGSize(width: barWidth, height: barHeight),
                     contentSize: CGSize(width: expandedWidth, height: max(0, expandedHeight - barHeight)))
     CATransaction.commit()
     container.updateTrackingAreas()
@@ -266,7 +268,11 @@ import SwiftUI
       guard let self else { return }
       self.shapeUpdatePending = false
       // 处理状态每次变化都会触发观察；只有形状尺寸真正改变才做动画。
-      guard self.shapeSize != self.lastShape else { return }
+      guard self.shapeSize != self.lastShape else {
+        // 展开时调整收起宽度或计数改变，遮罩可不变，但工具条宿主必须同步尺寸。
+        self.setEnvelope(self.envelope)
+        return
+      }
       // 收起态宽度随处理状态变化，同样走遮罩弹簧动画。
       self.animateShape()
     }
@@ -509,37 +515,54 @@ private struct P5Emblem: View {
 private struct NotchBar: View {
   let controller: NotchController
   @Environment(AppStore.self) var store
+  var body: some View {
+    NotchBarContent(activity: store.activity, count: store.pendingFocusCount,
+                    expanded: controller.expanded, pinned: controller.pinned,
+                    layout: controller.barLayout, toggle: controller.toggle)
+  }
+}
+
+/// 不读取配置或聊天数据的展示组件，可用合成状态验证真实 SwiftUI 排版。
+struct NotchBarContent: View {
+  let activity: IslandActivity
+  let count: Int
+  let expanded: Bool
+  let pinned: Bool
+  let layout: NotchBarLayout
+  var toggle: () -> Void = {}
   @Environment(\.accessibilityReduceMotion) private var reduceMotion
   var body: some View {
-    let count = store.pendingFocusCount
-    let activity = store.activity
-    Button {
-      controller.toggle()
-    } label: {
+    Button(action: toggle) {
       HStack(spacing: 0) {
         // 只有缓冲倒计时 / 重试倒数需要时钟；空闲时暂停。
-        TimelineView(.animation(minimumInterval: 0.25, paused: !activity.needsClock || controller.expanded)) { context in
+        TimelineView(.animation(minimumInterval: 0.25, paused: !activity.needsClock || expanded)) { context in
           HStack(spacing: 6) {
-            P5Emblem(phase: activity.phase, animate: !controller.expanded)
-            if !controller.expanded, let label = activity.compactLabel(now: activity.needsClock ? context.date : Date()) {
-              Text(label).font(P5.heavy(11)).monospacedDigit().foregroundStyle(.white).lineLimit(1).fixedSize()
+            P5Emblem(phase: activity.phase, animate: !expanded)
+            if !expanded, let label = activity.compactLabel(now: activity.needsClock ? context.date : Date()) {
+              Text(label).font(P5.heavy(11)).monospacedDigit().foregroundStyle(.white).lineLimit(1).minimumScaleFactor(0.6)
                 .padding(.horizontal, 7).padding(.vertical, 2.5)
                 .background(activity.phase == .retrying ? Color(white: 0.3) : P5.red, in: P5Slant(slant: 0.16))
                 .transition(.scale(scale: 0.2, anchor: .leading).combined(with: .opacity))
             }
           }
         }
-        .frame(maxWidth: .infinity)
-        Color.clear.frame(width: controller.metrics.hasNotch ? controller.notchWidth : 50)
+        .padding(.horizontal, 8)
+        .frame(width: layout.wingWidth(expanded: expanded))
+        .clipped()
+        Color.clear.frame(width: layout.centerWidth)
         HStack(spacing: 4) {
-          if controller.pinned { P5Spark().fill(P5.red).frame(width: 8, height: 8) }
-          Text(count == 0 ? "—" : "\(count)")
+          if pinned { P5Spark().fill(P5.red).frame(width: 8, height: 8) }
+          Text(verbatim: count == 0 ? "—" : "\(count)")
             .font(P5.numeral(13))
+            .lineLimit(1).minimumScaleFactor(0.5)
             .contentTransition(.numericText(value: Double(count)))
             .foregroundStyle(count == 0 ? Color(white: 0.4) : (activity.phase == .attention ? P5.red : .white))
             .scaleEffect(activity.phase == .attention && !reduceMotion ? 1.35 : 1)
-        }.frame(maxWidth: .infinity)
-      }.padding(.horizontal, 8).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .padding(.horizontal, 8)
+        .frame(width: layout.wingWidth(expanded: expanded))
+        .clipped()
+      }.frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .animation(reduceMotion ? nil : P5.pop, value: count)
         .animation(reduceMotion ? nil : P5.snap, value: activity.phase)

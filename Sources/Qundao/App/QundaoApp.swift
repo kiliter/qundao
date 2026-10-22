@@ -10,7 +10,7 @@ import UserNotifications
       ContentView().environment(store).background(WindowReader()).onAppear {
         AppDelegate.shared?.captureWindow()
       }
-    }.defaultSize(width: 1100, height: 760).commands {
+    }.windowStyle(.hiddenTitleBar).defaultSize(width: 1200, height: 800).commands {
       CommandGroup(replacing: .newItem) {}
       CommandGroup(after: .appInfo) {
         Button("打开主窗口") { delegate.showMain() }.keyboardShortcut("o")
@@ -19,7 +19,7 @@ import UserNotifications
           "i", modifiers: [.command, .shift])
       }
     }
-    Settings { ContentView().environment(store) }
+    Settings { ContentView().environment(store) }.windowStyle(.hiddenTitleBar)
     MenuBarExtra {
       Button("打开主窗口") { delegate.showMain() }
       Button("查看需要关注") { NotchController.shared?.expand(pin: true) }

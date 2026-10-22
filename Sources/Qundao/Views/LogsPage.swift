@@ -76,9 +76,16 @@ import SwiftUI
 struct LogsPage: View {
   /// 页面被保留但不可见时停止实时读取日志。
   var active = true
+  @Environment(\.controlActiveState) private var controlActiveState
   @StateObject private var browser = LogBrowser()
   var body: some View {
     VStack(spacing: 0) {
+      P5PageHeader(title: "运行日志", subtitle: "每一次读取、判断与摘要，都有迹可循。") {
+        HStack(spacing: 10) {
+          Button("刷新", systemImage: "arrow.clockwise") { Task { await browser.first() } }.disabled(browser.loading)
+          Button("打开归档", systemImage: "folder") { NSWorkspace.shared.open(EventLog.shared.directory) }
+        }.buttonStyle(P5ButtonStyle(compact: true))
+      }
       HStack(spacing: 12) {
         Picker("日志来源", selection: $browser.category) {
           Text("全部来源").tag(Optional<DiagnosticCategory>.none)
@@ -92,11 +99,7 @@ struct LogsPage: View {
         })).toggleStyle(.checkbox)
         if browser.loading { ProgressView().controlSize(.small) }
         Spacer()
-        Button("刷新") { Task { await browser.first() } }.disabled(browser.loading)
-        Button("打开归档", systemImage: "folder") {
-          NSWorkspace.shared.open(EventLog.shared.directory)
-        }
-      }.controlSize(.small).padding(16)
+      }.controlSize(.small).font(.caption).padding(.horizontal, 20).padding(.vertical, 12)
       HStack(spacing: 6) {
         Image(systemName: "doc.text.magnifyingglass")
         Text("入参和出参包含聊天原文；鉴权密钥已隐藏。按日留档，单文件 10 MB 后继续归档。")
@@ -107,7 +110,7 @@ struct LogsPage: View {
       }
       Divider()
       HSplitView {
-        logList.frame(minWidth: 245, idealWidth: 300, maxWidth: 380)
+        logList.frame(minWidth: 245, idealWidth: 290, maxWidth: 320)
         Group {
           if let item = browser.selected { LogDetail(record: item) }
           else { ContentUnavailableView("选择一条日志", systemImage: "doc.text",
@@ -115,27 +118,30 @@ struct LogsPage: View {
         }.frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
       }
       Divider()
-      HStack(spacing: 12) {
-        VStack(alignment: .leading, spacing: 3) {
+      VStack(alignment: .leading, spacing: 10) {
+        HStack(spacing: 12) {
           Text(browser.live ? (browser.following ? "● 实时刷新并跟随最新" : "● 实时刷新 · 保持当前详情") : "实时刷新已暂停")
             .foregroundStyle(browser.live ? .green : .secondary)
+          Spacer(minLength: 0)
           if let time = browser.lastRefresh {
             Text("更新于 \(time.formatted(date: .omitted, time: .standard))").foregroundStyle(.secondary)
           }
         }
-        if browser.hasNewRecords {
-          Button("有新日志") { Task { await browser.first(follow: true) } }
-            .disabled(browser.loading)
-        }
-        Spacer()
-        Picker("每页", selection: $browser.pageSize) {
-          Text("25 条 / 页").tag(25); Text("50 条 / 页").tag(50); Text("100 条 / 页").tag(100)
-        }.labelsHidden().frame(width: 105)
-        Button("上一页") { browser.previous() }.disabled(browser.pageIndex == 0 || browser.loading)
-        Text("第 \(browser.pageIndex + 1) 页 · \(browser.rows.count) 条").monospacedDigit()
-        Button("下一页") { Task { await browser.next() } }.disabled(!browser.canNext || browser.loading)
-        Button("回到最新") { Task { await browser.first(follow: true) } }.disabled(browser.loading)
-      }.font(.caption).controlSize(.small).padding(14)
+        HStack(spacing: 10) {
+          if browser.hasNewRecords {
+            Button("有新日志") { Task { await browser.first(follow: true) } }
+              .disabled(browser.loading)
+          }
+          Spacer()
+          Picker("每页", selection: $browser.pageSize) {
+            Text("25 条 / 页").tag(25); Text("50 条 / 页").tag(50); Text("100 条 / 页").tag(100)
+          }.labelsHidden().frame(width: 105)
+          Button("上一页") { browser.previous() }.disabled(browser.pageIndex == 0 || browser.loading)
+          Text("第 \(browser.pageIndex + 1) 页 · \(browser.rows.count) 条").monospacedDigit()
+          Button("下一页") { Task { await browser.next() } }.disabled(!browser.canNext || browser.loading)
+          Button("回到最新") { Task { await browser.first(follow: true) } }.disabled(browser.loading)
+        }.buttonStyle(P5ButtonStyle(compact: true))
+      }.font(.caption).controlSize(.small).padding(14).background(P5.mainPaper)
     }
     .task(id: active) { if active { await browser.observeUpdates() } }
     .onChange(of: browser.live) { _, enabled in
@@ -148,23 +154,26 @@ struct LogsPage: View {
     ScrollViewReader { proxy in
       List(selection: Binding(get: { browser.selected?.id }, set: { browser.choose($0) })) {
         ForEach(browser.rows) { item in
+          let selected = browser.selected?.id == item.id && controlActiveState != .inactive
           VStack(alignment: .leading, spacing: 6) {
             HStack {
-              Text(item.category.rawValue).font(.caption.weight(.medium))
+              P5Badge(text: item.category.rawValue, color: P5.ink)
               Spacer()
               Text(item.date, format: .dateTime.hour().minute().second()).font(.caption2).monospacedDigit()
-            }.foregroundStyle(.secondary)
+            }.foregroundStyle(selected ? .white.opacity(0.8) : P5.secondary)
             Label(item.event, systemImage: item.error.isEmpty ? "doc.text" : "exclamationmark.circle")
-              .font(.system(size: 12, weight: .medium)).foregroundStyle(item.error.isEmpty ? Color.primary : .orange)
+              .font(.system(size: 12, weight: .medium))
+              .foregroundStyle(selected ? .white : (item.error.isEmpty ? P5.ink : .orange))
               .lineLimit(1)
             HStack(spacing: 8) {
               if let status = item.statusCode { Text("HTTP \(status)") }
               if let duration = item.durationMS { Text("\(duration) ms") }
-              Text(String(item.correlationID.prefix(8))).foregroundStyle(.tertiary)
+              Text(String(item.correlationID.prefix(8)))
             }.font(.system(size: 10, design: .monospaced))
-          }.padding(.vertical, 6).tag(item.id).id(item.id)
+              .foregroundStyle(selected ? .white.opacity(0.8) : P5.secondary)
+          }.padding(.vertical, 8).tag(item.id).id(item.id)
         }
-      }.listStyle(.inset).scrollContentBackground(.hidden)
+      }.listStyle(.inset).scrollContentBackground(.hidden).background(P5.mainPaper)
         .overlay { if browser.rows.isEmpty && !browser.loading {
           ContentUnavailableView("暂无日志", systemImage: "doc.text",
             description: Text("该来源尚未产生记录。"))
@@ -203,7 +212,7 @@ private struct LogDetail: View {
     VStack(alignment: .leading, spacing: 0) {
       VStack(alignment: .leading, spacing: 8) {
         HStack {
-          Text(record.event).font(.headline)
+          Text(record.event).font(P5.heavy(16))
           Spacer()
           Text(record.category.rawValue).font(.caption).foregroundStyle(.secondary)
         }
@@ -226,11 +235,12 @@ private struct LogDetail: View {
       }.padding(16)
       Divider()
       ScrollView(wrap ? .vertical : [.horizontal, .vertical]) {
-        Text(content).font(.system(size: 12, design: .monospaced)).textSelection(.enabled)
+        Text(content).font(.system(size: 12, design: .monospaced)).foregroundStyle(.white.opacity(0.88))
+          .lineSpacing(5).textSelection(.enabled)
           .fixedSize(horizontal: !wrap, vertical: true)
           .frame(maxWidth: .infinity, alignment: .topLeading).padding(16)
       }.frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        .background(.primary.opacity(0.025))
+        .background(P5.ink)
     }.onChange(of: tab) { _, _ in copied = false }
       .onChange(of: readable) { _, _ in copied = false }
       .onChange(of: record.id) { _, _ in copied = false }

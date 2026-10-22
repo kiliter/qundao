@@ -7,4 +7,5 @@ let package = Package(
   targets: [
     .target(name: "QundaoCore"), .executableTarget(name: "Qundao", dependencies: ["QundaoCore"]),
     .testTarget(name: "QundaoCoreTests", dependencies: ["QundaoCore"]),
+    .testTarget(name: "QundaoTests", dependencies: ["Qundao"]),
   ])

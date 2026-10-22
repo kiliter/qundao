@@ -4,44 +4,23 @@ import SwiftUI
 struct ContentView: View {
   @Environment(AppStore.self) var store
   var body: some View {
-    NavigationSplitView {
-      VStack(spacing: 0) {
-        HStack(spacing: 10) {
-          Image(systemName: "circle.bottomhalf.filled").font(.system(size: 25)).foregroundStyle(.indigo)
-          Text("群岛").font(.title3.weight(.semibold))
-          Spacer()
-        }.padding(18)
-        List(selection: Bindable(store).page) {
-          Section("工作空间") { ForEach([Page.attention, .summary, .groups]) { nav($0) } }
-          Section("偏好设置") {
-            ForEach([Page.rules, .appearance, .connection, .logs]) { nav($0) }
-          }
-        }.listStyle(.sidebar)
-        SidebarStatus()
-      }.navigationSplitViewColumnWidth(min: 180, ideal: 190, max: 230)
-    } detail: {
-      VStack(spacing: 0) {
-        if let error = store.error { errorBanner(error) }
-        PageHost(page: store.page).frame(maxWidth: .infinity, maxHeight: .infinity)
-        Divider()
-        StatusFooter()
+    VStack(spacing: 0) {
+      MainTitlebar()
+      HStack(spacing: 0) {
+        MainSidebar()
+        VStack(spacing: 0) {
+          if let error = store.error { errorBanner(error) }
+          PageHost(page: store.page).frame(maxWidth: .infinity, maxHeight: .infinity)
+        }.frame(maxWidth: .infinity, maxHeight: .infinity)
       }
-      .navigationTitle(store.page.rawValue)
-      .toolbar {
-        ToolbarItem(placement: .primaryAction) { ListeningToolbar() }
-      }
+      StatusFooter()
     }
-    .frame(minWidth: 940, minHeight: 620).tint(.indigo)
+    .frame(minWidth: 940, minHeight: 620)
+    .background(P5.mainPaper).foregroundStyle(P5.ink).tint(P5.red)
+    .buttonStyle(P5ButtonStyle()).preferredColorScheme(.light)
+    .overlay(alignment: .topTrailing) { MainAttentionArrival().padding(.top, 48).padding(.trailing, 24) }
+    .ignoresSafeArea(.container, edges: .top)
     .sheet(item: Bindable(store).detail) { AttentionDetail(item: $0).environment(store) }
-  }
-  private func nav(_ page: Page) -> some View {
-    HStack {
-      Label(page.rawValue, systemImage: page.icon)
-      Spacer()
-      if page == .attention && store.pendingFocusCount > 0 {
-        Text("\(store.pendingFocusCount)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-      }
-    }.tag(page).padding(.vertical, 2)
   }
   private func errorBanner(_ error: String) -> some View {
     HStack(alignment: .center, spacing: 10) {
@@ -57,7 +36,7 @@ struct ContentView: View {
 
 /// 主窗口页面容器：每个页面首次访问时创建独立的 NSHostingView，之后只挂上 / 卸下，不重建。
 /// SwiftUI 的 opacity(0) 会把隐藏页面的 AppKit 子视图摘下、显示时重新挂载，整棵表格和文字要重新排版；
-/// 这里的 AppKit 视图始终挂在窗口里，切换页面不重建、不重新挂载。
+/// 这里保留宿主和状态，仅将当前页面挂到窗口，隐藏页不参与排版。
 private struct PageHost: NSViewRepresentable {
   let page: Page
   @Environment(AppStore.self) private var store
@@ -117,7 +96,8 @@ final class PageContainerView: NSView {
   }
   @MainActor private func makeHost(_ page: Page) {
     if hosts[page] == nil {
-      let root = AnyView(PageRoot(page: page, visibility: visibility).environment(store).tint(.indigo))
+      let root = AnyView(PageRoot(page: page, visibility: visibility).environment(store).tint(P5.red)
+        .foregroundStyle(P5.ink).buttonStyle(P5ButtonStyle()).environment(\.colorScheme, .light))
       let host: NSView
       switch page {
       case .rules, .appearance, .connection: host = SettingsScrollView(content: root)
@@ -152,15 +132,25 @@ private struct PageRoot: View {
     case .logs: LogsPage(active: active)
     default:
       // 偏好设置页由 PageContainerView 放进 AppKit 滚动视图（SettingsScrollView），这里只给内容。
-      VStack(alignment: .leading, spacing: 18) {
-        switch page {
-        case .rules: RulesPage()
-        case .appearance: AppearancePage()
-        case .connection: ConnectionPage()
-        default: EmptyView()
-        }
-      }.padding(24).frame(maxWidth: 860, alignment: .leading)
-        .frame(maxWidth: .infinity, alignment: .topLeading)
+      VStack(alignment: .leading, spacing: 0) {
+        PageHeading(title: page.rawValue, subtitle: settingsSubtitle)
+        VStack(alignment: .leading, spacing: 22) {
+          switch page {
+          case .rules: RulesPage()
+          case .appearance: AppearancePage()
+          case .connection: ConnectionPage()
+          default: EmptyView()
+          }
+        }.padding(24).frame(maxWidth: 1100, alignment: .leading)
+          .frame(maxWidth: .infinity, alignment: .topLeading)
+      }.background(P5.mainPaper)
+    }
+  }
+  private var settingsSubtitle: String {
+    switch page {
+    case .rules: return "让与你有关的消息，准确地找到你。"
+    case .appearance: return "把关注留在眼前，让提醒恰到好处。"
+    default: return "连接消息来源，选择适合你的模型。"
     }
   }
 }
@@ -174,74 +164,12 @@ extension EnvironmentValues {
   }
 }
 
-/// 状态信息单独成视图，推送/同步状态变化只刷新这一小块。
-private struct StatusFooter: View {
-  @Environment(AppStore.self) var store
-  var body: some View {
-    HStack(spacing: 8) {
-      Circle().fill(store.running ? Color.green : Color.secondary).frame(width: 5, height: 5)
-      Text(store.streamStatus).lineLimit(1)
-      if store.running { Text("· " + store.decisionStatus).lineLimit(1) }
-      Spacer()
-      if let time = store.lastSync {
-        Text("最近同步 \(time.formatted(date: .omitted, time: .shortened))")
-      }
-    }.font(.system(size: 10)).foregroundStyle(.secondary)
-      .padding(.horizontal, 18).padding(.vertical, 8)
-  }
-}
-
-private struct SidebarStatus: View {
-  @Environment(AppStore.self) var store
-  var body: some View {
-    VStack(alignment: .leading, spacing: 7) {
-      Label(store.running ? "正在监听" : "监听已暂停",
-            systemImage: store.running ? "circle.fill" : "pause.circle")
-        .font(.caption).foregroundStyle(store.running ? .green : .secondary)
-      Text("白名单 \(store.preferences.selectedGroups.count) 个群 · 即时与周期摘要")
-        .font(.system(size: 10)).foregroundStyle(.secondary)
-    }.frame(maxWidth: .infinity, alignment: .leading).padding(16)
-  }
-}
-
-private struct ListeningToolbar: View {
-  @Environment(AppStore.self) var store
-  var body: some View {
-    HStack(spacing: 10) {
-      if store.syncing || store.analyzing { ProgressView().controlSize(.small) }
-      Button(store.running ? "暂停监听" : "开始监听",
-             systemImage: store.running ? "pause" : "play") {
-        store.running ? store.stop() : store.start()
-      }
-    }
-  }
-}
-
-struct PageHeading: View {
-  let title: String
-  let subtitle: String
-  var body: some View {
-    VStack(alignment: .leading, spacing: 6) {
-      Text(title).font(.system(size: 20, weight: .semibold))
-      Text(subtitle).font(.callout).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
-    }
-  }
-}
-struct SoftCard<Content: View>: View {
-  @ViewBuilder var content: Content
-  var body: some View {
-    VStack(alignment: .leading, spacing: 14) { content }
-      .frame(maxWidth: .infinity, alignment: .leading).padding(18)
-      .background(.background, in: RoundedRectangle(cornerRadius: 12))
-      .overlay(RoundedRectangle(cornerRadius: 12).stroke(.primary.opacity(0.07)))
-  }
-}
 struct AttentionCard: View {
   @Environment(AppStore.self) var store
   let item: Attention
   var compact = false
   var body: some View {
-    SoftCard {
+    P5PaperCard {
       HStack {
         Label(item.groupName, systemImage: "person.2.fill").font(.caption).lineLimit(1)
         Spacer()
@@ -251,7 +179,7 @@ struct AttentionCard: View {
         HStack {
           Text(item.title).font(.headline)
           Spacer()
-          Text(item.definite ? "直接命中" : "AI 判断").font(.caption2).foregroundStyle(.indigo)
+          Text(item.definite ? "直接命中" : "AI 判断").font(.caption2).foregroundStyle(P5.red)
         }
       }
       Text("\(item.message.sender)：\(item.message.text)").font(compact ? .caption : .callout)
@@ -265,7 +193,7 @@ struct AttentionCard: View {
         } else {
           Text(item.status == "done" ? "已处理" : "稍后提醒").foregroundStyle(.secondary)
         }
-      }.buttonStyle(.bordered).controlSize(.small)
+      }.buttonStyle(P5ButtonStyle()).controlSize(.small)
     }
   }
 }
@@ -292,7 +220,7 @@ struct AttentionDetail: View {
         Button("标记已处理") {
           store.resolve(item)
           dismiss()
-        }.buttonStyle(.borderedProminent)
+        }.buttonStyle(P5ButtonStyle(kind: .primary))
         Button("稍后提醒") {
           store.snooze(item)
           dismiss()
@@ -302,7 +230,8 @@ struct AttentionDetail: View {
           NSPasteboard.general.setString(item.message.text, forType: .string)
         }
       }
-    }.padding(24).frame(width: 620, height: 550)
+    }.padding(24).frame(width: 620, height: 550).background(P5.mainPaper)
+      .tint(P5.red).foregroundStyle(P5.ink).preferredColorScheme(.light)
   }
 }
 

@@ -45,6 +45,7 @@ struct ConversationBrowser<Detail: View>: View {
   @Binding var search: String
   let emptyTitle: String
   var compact = false
+  @FocusState private var listFocused: Bool
   @ViewBuilder var detail: (String) -> Detail
   private var filtered: [ConversationRow] {
     rows.filter { search.isEmpty || $0.name.localizedCaseInsensitiveContains(search) }
@@ -56,62 +57,42 @@ struct ConversationBrowser<Detail: View>: View {
         SearchBox(placeholder: compact ? "群聊" : "搜索群聊", text: $search).padding(compact ? 6 : 12)
         Divider()
         if filtered.isEmpty {
-          ContentUnavailableView(search.isEmpty ? emptyTitle : "没有匹配的群聊",
-                                 systemImage: "bubble.left.and.bubble.right",
-                                 description: Text(search.isEmpty ? "有新内容时会出现在这里。" : "试试其他群名称。"))
-            .frame(maxHeight: .infinity)
+          P5EmptyState(title: search.isEmpty ? emptyTitle : "没有匹配的群聊",
+                       message: search.isEmpty ? "有新内容时会出现在这里。" : "试试其他群名称。")
         } else {
-          List(selection: $selection) {
-            ForEach(filtered) { row in
-              HStack(alignment: .top, spacing: 10) {
-                if !compact { GroupAvatar(name: row.name, size: 36) }
-                VStack(alignment: .leading, spacing: 5) {
-                  HStack {
-                    Text(row.name).font(.system(size: compact ? 11 : 13, weight: .semibold)).lineLimit(1)
-                    Spacer(minLength: 2)
-                    if let unread = row.unreadState.count, unread > 0 {
-                      HStack(spacing: 4) {
-                        Circle().fill(.indigo).frame(width: 6, height: 6)
-                        Text(row.unreadState.badgeText)
-                          .font(.system(size: 10, weight: .medium)).foregroundStyle(.indigo)
-                      }.fixedSize().help(row.unreadState.description)
-                        .accessibilityElement(children: .ignore)
-                        .accessibilityLabel(row.unreadState.description)
-                    } else if row.unreadState.count == nil {
-                      Image(systemName: "clock").font(.system(size: 10)).foregroundStyle(.tertiary)
-                        .help("该群微信未读状态尚未从 Alpha 同步，不能据此判断是否已读")
-                        .accessibilityLabel("微信未读状态尚未同步")
-                    }
-                  }
-                  // 单行预览只取开头，避免整段长摘要参与排版。
-                  Text(String(row.preview.prefix(140)).replacingOccurrences(of: "\n", with: " "))
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
-                  HStack {
-                    if row.related {
-                      Text("与你相关").foregroundStyle(.indigo)
-                    } else if !compact {
-                      Text(row.date, format: .dateTime.month().day().hour().minute())
-                    }
-                    Spacer()
-                    Text("\(row.count) \(row.countLabel)")
-                  }.font(.system(size: 10)).foregroundStyle(.secondary)
+          ScrollViewReader { proxy in
+            ScrollView {
+              LazyVStack(spacing: 8) {
+                ForEach(filtered) { row in
+                  Button { selection = row.id; listFocused = true } label: {
+                    ConversationListRow(row: row, selected: selection == row.id, compact: compact)
+                  }.buttonStyle(.plain).id(row.id)
+                    .accessibilityAddTraits(selection == row.id ? .isSelected : [])
                 }
-              }.padding(.vertical, compact ? 4 : 7).tag(row.id)
+              }.padding(.horizontal, 12).padding(.vertical, 12)
             }
-          }.listStyle(.inset).scrollContentBackground(.hidden)
+            .focusable().focused($listFocused).focusEffectDisabled()
+            .onMoveCommand { direction in
+              guard direction == .up || direction == .down else { return }
+              let index = filtered.firstIndex { $0.id == selection } ?? 0
+              selection = filtered[min(filtered.count - 1, max(0, index + (direction == .up ? -1 : 1)))].id
+            }
+            .onChange(of: selection) { _, id in if let id { proxy.scrollTo(id) } }
+          }
         }
         Divider()
         Text("\(filtered.count) 个群聊").font(.caption2).foregroundStyle(.secondary)
           .frame(maxWidth: .infinity, alignment: .leading).padding(12)
-      }.frame(minWidth: compact ? 100 : 230, idealWidth: compact ? 115 : 265, maxWidth: compact ? 150 : 290, maxHeight: .infinity)
+      }.frame(minWidth: compact ? 100 : 225, idealWidth: compact ? 115 : 250, maxWidth: compact ? 150 : 260, maxHeight: .infinity)
+        .background(P5.mainPaper)
       Group {
         if let id = selection, filtered.contains(where: { $0.id == id }) {
           detail(id)
         } else {
-          ContentUnavailableView("选择一个群聊", systemImage: "text.bubble",
-                                 description: Text("左侧选择群聊，在这里阅读内容。"))
+          P5EmptyState(title: "选择一个群聊", message: "左侧选择群聊，在这里阅读内容。")
         }
-      }.frame(minWidth: compact ? 195 : 400, maxWidth: .infinity, maxHeight: .infinity)
+      }.frame(minWidth: compact ? 195 : 360, maxWidth: .infinity, maxHeight: .infinity)
+        .background(P5ReadingBackground())
     }
     .onAppear { reconcile(filtered) }
     .onChange(of: filtered.map(\.id)) { _, ids in reconcile(filtered) }
@@ -156,25 +137,69 @@ struct GroupReadSyncStatus: View {
 struct SearchBox: View {
   let placeholder: String
   @Binding var text: String
+  @FocusState private var focused: Bool
   var body: some View {
     HStack(spacing: 8) {
       Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-      TextField(placeholder, text: $text).textFieldStyle(.plain)
+      TextField(placeholder, text: $text).textFieldStyle(.plain).focused($focused)
       if !text.isEmpty {
         Button { text = "" } label: { Image(systemName: "xmark.circle.fill") }
           .buttonStyle(.plain).foregroundStyle(.secondary).accessibilityLabel("清空搜索")
       }
     }.padding(.horizontal, 10).padding(.vertical, 8)
-      .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 9))
+      .background(.white)
+      .overlay(Rectangle().stroke(focused ? P5.red : P5.ink.opacity(0.24), lineWidth: focused ? 2 : 1))
   }
 }
 struct GroupAvatar: View {
   let name: String
   var size: CGFloat = 36
+  var selected = false
   var body: some View {
-    Text(String(name.prefix(1))).font(.system(size: size * 0.42, weight: .medium))
-      .foregroundStyle(.indigo).frame(width: size, height: size)
-      .background(.indigo.opacity(0.1), in: RoundedRectangle(cornerRadius: size * 0.25))
+    Text(String(name.prefix(1))).font(.system(size: size * 0.42, weight: .heavy))
+      .foregroundStyle(selected ? P5.red : .white).frame(width: size, height: size)
+      .background(selected ? .white : P5.ink, in: P5Shard())
       .accessibilityHidden(true)
+  }
+}
+
+private struct ConversationListRow: View {
+  let row: ConversationRow
+  let selected: Bool
+  let compact: Bool
+  var body: some View {
+    HStack(alignment: .top, spacing: 10) {
+      if !compact { GroupAvatar(name: row.name, size: 31, selected: selected) }
+      VStack(alignment: .leading, spacing: 8) {
+        HStack(alignment: .firstTextBaseline, spacing: 4) {
+          Text(row.name).font(.system(size: compact ? 11 : 12, weight: .bold)).lineLimit(1)
+          Spacer(minLength: 0)
+          Text(row.date, format: .dateTime.hour().minute()).font(.system(size: 9)).monospacedDigit()
+            .foregroundStyle(selected ? .white.opacity(0.8) : P5.secondary)
+        }
+        Text(String(row.preview.prefix(140)).replacingOccurrences(of: "\n", with: " "))
+          .font(.system(size: 11)).lineSpacing(3).lineLimit(2)
+          .foregroundStyle(selected ? .white.opacity(0.85) : P5.secondary)
+        HStack(spacing: 4) {
+          Text("\(row.count) \(row.countLabel)").font(.system(size: 9))
+            .foregroundStyle(selected ? .white.opacity(0.8) : P5.secondary)
+          Spacer(minLength: 2)
+          if let unread = row.unreadState.count, unread > 0 {
+            Text(row.unreadState.badgeText).font(P5.numeral(10))
+              .padding(.horizontal, 5).padding(.vertical, 2)
+              .foregroundStyle(selected ? P5.red : .white)
+              .background(selected ? .white : P5.red, in: P5Slant())
+              .help(row.unreadState.description).accessibilityLabel(row.unreadState.description)
+          } else if row.unreadState.count == nil {
+            Image(systemName: "clock").font(.system(size: 10))
+              .help("微信未读状态尚未从 Alpha 同步").accessibilityLabel("微信未读状态尚未同步")
+          }
+        }
+      }
+    }.padding(.horizontal, 12).padding(.vertical, compact ? 10 : 14)
+      .frame(maxWidth: .infinity, alignment: .leading)
+      .foregroundStyle(selected ? .white : P5.ink)
+      .background { if selected { P5Slant(slant: 0.022).fill(P5.red) } }
+      .contentShape(Rectangle())
   }
 }

@@ -14,44 +14,55 @@ struct SummaryReadingCard: View {
   var stateLabel: String? = nil
   /// 并入本卡片的「找你 / 需回应」提醒。
   var tags: [Attention] = []
+  var highlightedIDs: Set<String> = []
   var onRead: () -> Void
   var onSnooze: (() -> Void)? = nil
-  @Environment(AppStore.self) var store
   @State private var showingSource = false
   var body: some View {
     VStack(alignment: .leading, spacing: compact ? 9 : 14) {
-      HStack {
-        Label(stateLabel ?? (viewed ? "已阅" : "待阅"), systemImage: viewed ? "checkmark.circle" : "text.alignleft")
-          .font(.caption.weight(.medium)).foregroundStyle(viewed ? Color.secondary : .indigo)
+      HStack(spacing: 7) {
+        P5Badge(text: stateLabel ?? (viewed ? "已阅" : "待阅"), color: viewed ? P5.secondary : P5.red)
+        if !tags.isEmpty { AttentionTags(tags: tags) }
         Spacer()
         Text(date, format: .dateTime.month().day().hour().minute()).font(.caption2).foregroundStyle(.secondary)
           .help("本批最新消息时间")
       }
       Text(text).font(.system(size: compact ? 12 : 14)).lineSpacing(compact ? 4 : 6)
         .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading)
-      if !tags.isEmpty { AttentionTags(tags: tags) }
       if !reason.isEmpty {
-        Text(reason).font(.caption).foregroundStyle(.secondary)
+        HStack(alignment: .top, spacing: 7) {
+          Image(systemName: "link").foregroundStyle(P5.red)
+          Text(reason).textSelection(.enabled)
+        }.font(.system(size: 11)).foregroundStyle(P5.secondary)
       }
       Divider()
       HStack(spacing: 8) {
-        Button("查看原文") { showingSource = true }.disabled(messages.isEmpty)
+        Button("查看原文", systemImage: "text.bubble") { showingSource = true }.disabled(messages.isEmpty)
+          .buttonStyle(P5ButtonStyle(kind: .quiet, compact: true))
           .help("弹出显示本批聊天记录")
           .accessibilityIdentifier("reading-source-\(recordID)")
+        Text("本批 \(messages.count) 条").font(.system(size: 10)).foregroundStyle(P5.secondary)
         Spacer(minLength: 0)
         if !viewed {
-          Button("已阅", action: onRead).help("仅标记群岛内容已阅，不改变微信未读")
+          Button("已阅", systemImage: "checkmark", action: onRead).help("仅标记群岛内容已阅，不改变微信未读")
             .accessibilityIdentifier("reading-viewed-\(recordID)")
         }
         if !compact, !viewed, let onSnooze {
           Button("稍后", action: onSnooze).help("15 分钟后再次提醒")
         }
-      }.buttonStyle(.borderless).font(.caption)
-      Text("本批 \(messages.count) 条消息").font(.caption2).foregroundStyle(.secondary)
-    }.padding(compact ? 10 : 18)
-      .background(.primary.opacity(0.045), in: RoundedRectangle(cornerRadius: 12))
+      }.buttonStyle(P5ButtonStyle(compact: true))
+    }.padding(compact ? 12 : 22)
+      .background(.white)
+      .overlay(Rectangle().stroke(P5.ink, lineWidth: 1.4))
+      .background((viewed ? P5.ink : P5.red).offset(x: 5, y: 5))
+      .overlay(alignment: .topLeading) {
+        Rectangle().fill(P5.ink).frame(width: 36, height: 7).rotationEffect(.degrees(-4))
+          .offset(x: 22, y: -3).accessibilityHidden(true)
+      }
+      .padding(.trailing, 5).padding(.top, 4).padding(.bottom, 5)
       .sheet(isPresented: $showingSource) {
-        SourceTranscriptSheet(groupName: groupName, messages: messages) { showingSource = false }
+        SourceTranscriptSheet(groupName: groupName, messages: messages,
+          highlightedIDs: highlightedIDs.union(tags.filter(\.definite).map { $0.message.id })) { showingSource = false }
       }
   }
 }
@@ -61,23 +72,27 @@ struct SourceTranscriptSheet: View {
   @Environment(AppStore.self) var store
   let groupName: String
   let messages: [Message]
+  var highlightedIDs: Set<String> = []
   let close: () -> Void
   var body: some View {
     VStack(spacing: 0) {
       HStack {
         VStack(alignment: .leading, spacing: 4) {
-          Text(groupName).font(.headline)
+          Text(groupName).font(P5.heavy(20))
           Text("本批原文 · \(messages.count) 条消息").font(.caption).foregroundStyle(.secondary)
         }
         Spacer()
-        Button("关闭", action: close).keyboardShortcut(.cancelAction)
-      }.padding(18)
-      Divider()
+        Button("关闭", systemImage: "xmark", action: close).keyboardShortcut(.cancelAction)
+          .buttonStyle(P5ButtonStyle(compact: true))
+      }.padding(22).background(P5.mainPaper)
+      Rectangle().fill(P5.ink).frame(height: 2)
       ChatTranscript(messages: messages.sorted { $0.timestamp < $1.timestamp },
-                     selfID: store.activeAccount?.subjectID ?? "")
+                     selfID: store.activeAccount?.subjectID ?? "", highlightedIDs: highlightedIDs)
       Divider()
-      Text("阅读原文不会改变微信未读状态").font(.caption2).foregroundStyle(.secondary).padding(12)
-    }.frame(width: 640, height: 560)
+      Label("阅读原文不会改变微信未读状态", systemImage: "checkmark.shield")
+        .font(.caption2).foregroundStyle(P5.secondary).padding(14)
+    }.frame(width: 640, height: 560).background(P5.mainPaper)
+      .foregroundStyle(P5.ink).tint(P5.red).preferredColorScheme(.light)
   }
 }
 
@@ -101,12 +116,7 @@ struct AttentionTags: View {
   var body: some View {
     HStack(spacing: 6) {
       ForEach(tags.prefix(3), id: \.id) { tag in
-        Label(tag.title, systemImage: tag.definite ? "at" : "bubble.left.and.exclamationmark.bubble.right")
-          .font(.caption2.weight(.medium)).lineLimit(1)
-          .foregroundStyle(tag.definite ? Color.orange : Color.indigo)
-          .padding(.horizontal, 7).padding(.vertical, 2)
-          .background((tag.definite ? Color.orange : Color.indigo).opacity(dark ? 0.22 : 0.12), in: Capsule())
-          .help(tag.reason)
+        P5Badge(text: tag.title, color: tag.definite ? P5.ink : P5.secondary).help(tag.reason)
       }
       if tags.count > 3 { Text("+\(tags.count - 3)").font(.caption2).foregroundStyle(.secondary) }
     }.accessibilityElement(children: .combine)
@@ -125,6 +135,7 @@ struct FocusReadingCard: View {
       SummaryReadingCard(recordID: item.id, groupName: item.groupName, text: item.title, reason: item.reason,
         date: item.message.date, messages: [item.message], viewed: item.status == "done", compact: compact,
         stateLabel: item.status == "snoozed" ? "稍后提醒" : nil,
+        highlightedIDs: item.definite ? [item.message.id] : [],
         onRead: { store.readFocusEntries([entry]) }, onSnooze: item.status == "pending" ? { store.snooze(item) } : nil)
     }
   }
