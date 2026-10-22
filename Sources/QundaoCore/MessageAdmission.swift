@@ -21,7 +21,14 @@ extension AppSnapshot {
       if seen.contains(message.key) {
         if !message.senderID.isEmpty, let index = messages.firstIndex(where: { $0.key == message.key }),
            messages[index].senderID.isEmpty {
-          messages[index] = message
+          messages[index] = messages[index].fillingSender(from: message)
+          realtimeBuffer?.enrichSender(message)
+          for batchIndex in decisionBatches?.indices ?? 0..<0 {
+            let enriched = decisionBatches?[batchIndex].messages.map {
+              $0.fillingSender(from: message)
+            } ?? []
+            decisionBatches?[batchIndex].messages = enriched
+          }
           if !selfID.isEmpty && message.senderID == selfID { attentions.removeAll { $0.id == message.key } }
         }
         continue
@@ -63,5 +70,16 @@ extension AppSnapshot {
     // 旧 MCP 游标不能用于 REST offset；重新补查后由消息 ID 去重，成功摘要标记不变。
     checkpoints = [:]
     alphaRESTVersion = 1
+  }
+}
+
+extension Message {
+  /// REST 补齐 SSE 未提供的发送者身份，不改写正文、时间或已经确认的身份。
+  func fillingSender(from incoming: Message) -> Message {
+    guard key == incoming.key else { return self }
+    var enriched = self
+    if enriched.senderID.isEmpty { enriched.senderID = incoming.senderID }
+    if enriched.sender.isEmpty { enriched.sender = incoming.sender }
+    return enriched
   }
 }

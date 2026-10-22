@@ -93,6 +93,7 @@ struct SourceTranscriptSheet: View {
         .font(.caption2).foregroundStyle(P5.secondary).padding(14)
     }.frame(width: 640, height: 560).background(P5.mainPaper)
       .foregroundStyle(P5.ink).tint(P5.red).preferredColorScheme(.light)
+      .onChange(of: store.preferences.accountID) { _, _ in close() }
   }
 }
 

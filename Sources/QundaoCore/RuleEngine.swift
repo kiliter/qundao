@@ -16,6 +16,8 @@ public enum RuleEngine {
       return .definite("群体提醒：消息结构中 @所有人，包含你")
     }
     let text = message.text
+    // 显式 @ 的完整对象由下面的边界规则判断，不能再把相似用户名当作普通正文称呼命中。
+    let prose = text.replacingOccurrences(of: "[@＠][^\\s\\p{P}\\u2005]+", with: " ", options: .regularExpression)
     if text.range(
       of: "(?<![A-Za-z0-9_@＠])[@＠](?:所有人|全体成员|全体|全员|大家|all|everyone|here)(?![A-Za-z0-9_]|\\.[A-Za-z])",
       options: [.regularExpression, .caseInsensitive]) != nil {
@@ -38,7 +40,7 @@ public enum RuleEngine {
       {
         return .definite("直接点名称呼并提出请求：\(name)")
       }
-      if text.localizedCaseInsensitiveContains(name) { return .candidate("提到了你的称呼：\(name)") }
+      if prose.localizedCaseInsensitiveContains(name) { return .candidate("提到了你的称呼：\(name)") }
     }
     for word in keywords.filter({ !$0.isEmpty }) where text.localizedCaseInsensitiveContains(word) {
       return .candidate("涉及关注事项：\(word)")

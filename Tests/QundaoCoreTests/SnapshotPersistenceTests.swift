@@ -3,6 +3,38 @@ import XCTest
 @testable import QundaoCore
 
 final class SnapshotPersistenceTests: XCTestCase {
+  func testEncodingFailureCannotPoisonLaterCollectionChanges() throws {
+    let directory = tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = SnapshotPersistence(directory: directory)
+    var original = AppSnapshot()
+    original.groups = [ChatGroup(id: "g1@chatroom", name: "合成群一", unread: 0)]
+    try disk.save(original)
+    var changed = original
+    changed.groups.append(ChatGroup(id: "g2@chatroom", name: "合成群二", unread: 0))
+    var invalid = changed
+    var attention = Attention(message: message("M1"), groupName: "合成群", title: "测试", reason: "测试", definite: false)
+    attention.remindAt = Date(timeIntervalSince1970: .infinity)
+    invalid.attentions = [attention]
+    XCTAssertThrowsError(try disk.save(invalid))
+    // 回退到原状态保存，再重试先前已比较过的合法集合变化。
+    try disk.save(original)
+    try disk.save(changed)
+    XCTAssertEqual(try SnapshotPersistence(directory: directory).load().groups, changed.groups)
+  }
+
+  func testRestoredDatabasePermissionsAreRestrictedOnOpen() throws {
+    let directory = tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    try SnapshotPersistence(directory: directory).save(AppSnapshot())
+    let database = directory.appendingPathComponent(SnapshotPersistence.databaseName)
+    try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: directory.path)
+    try FileManager.default.setAttributes([.posixPermissions: 0o644], ofItemAtPath: database.path)
+    _ = try SnapshotPersistence(directory: directory).load()
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? Int, 0o700)
+    XCTAssertEqual(try FileManager.default.attributesOfItem(atPath: database.path)[.posixPermissions] as? Int, 0o600)
+  }
+
   private func tempDirectory() -> URL {
     FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
   }

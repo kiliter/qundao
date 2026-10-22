@@ -6,7 +6,15 @@ import QundaoCore
   private weak var store: AppStore?
   private var task: Task<Void, Never>?
   private var generation = UUID()
-  init(store: AppStore) { self.store = store }
+  typealias Evaluate = (JevClient, [Message], [Message], Preferences, String) async throws -> [JevDecision]
+  private let evaluate: Evaluate
+  init(store: AppStore, evaluate: @escaping Evaluate = { client, messages, context, preferences, selfID in
+    try await client.decide(messages: messages, context: context, names: preferences.names,
+                            keywords: preferences.keywords, selfID: selfID)
+  }) {
+    self.store = store
+    self.evaluate = evaluate
+  }
   func receive(_ messages: [Message], scope: ConversationScope, summaryTriggered: Bool = false) {
     guard let store, store.messageAdmission.allows(scope) else { return }
     let messages = messages.filter { store.messageAdmission.allows($0) && $0.groupID == scope.group }
@@ -46,9 +54,15 @@ import QundaoCore
       }
     }
   }
-  func stop() { generation = UUID(); task?.cancel(); task = nil }
+  func stop() {
+    generation = UUID(); task?.cancel(); task = nil
+    store?.jevJudging = nil
+    store?.refreshActivity()
+  }
   @discardableResult private func fallback(_ batch: DecisionBatch) -> Bool {
-    guard let store, store.messageAdmission.allows(batch.scope), batch.messages.allSatisfy(store.messageAdmission.allows) else { return false }
+    guard let store else { return false }
+    let batch = refreshed(batch, store: store)
+    guard store.messageAdmission.allows(batch.scope), batch.messages.allSatisfy(store.messageAdmission.allows) else { return false }
     let prefs = store.preferences
     let decisions = RealtimeDecision.local(batch.messages, preferences: prefs, selfID: store.activeAccount?.subjectID ?? "",
       semantic: { store.semantic.matches($0, keywords: prefs.keywords) })
@@ -61,6 +75,15 @@ import QundaoCore
     if related, !batch.fallbackTriggered { store.enqueue(batch.scope.group) }
     return related
   }
+  /// REST 补查可能在模型等待期间补齐推送缺失的发送人身份，不能继续使用旧批次判为他人发言。
+  private func refreshed(_ batch: DecisionBatch, store: AppStore) -> DecisionBatch {
+    var latest = store.snapshot.decisionBatches?.first(where: { $0.id == batch.id }) ?? batch
+    let keys = Set(latest.messages.map(\.key))
+    let messages = Dictionary(store.snapshot.messages.filter { keys.contains($0.key) }.map { ($0.key, $0) },
+                              uniquingKeysWith: { _, last in last })
+    latest.messages = latest.messages.map { messages[$0.key] ?? $0 }
+    return latest
+  }
   private func decide(_ batch: DecisionBatch, current: UUID) async {
     guard let store, store.messageAdmission.allows(batch.scope), batch.messages.allSatisfy(store.messageAdmission.allows) else { return }
     let prefs = store.preferences
@@ -68,12 +91,15 @@ import QundaoCore
     let name = store.snapshot.groups.first(where: { $0.id == batch.scope.group })?.name ?? batch.scope.group
     store.jevJudging = batch.scope.group
     store.refreshActivity()
-    defer { store.jevJudging = nil; store.refreshActivity() }
+    defer {
+      // 旧请求可能在新一代判断启动后才返回，不能清掉新请求的进度。
+      if generation == current { store.jevJudging = nil; store.refreshActivity() }
+    }
     do {
       store.decisionStatus = "Jev 正在判断"
       let client = JevClient(key: store.jevKey, configuration: prefs.jevConfiguration,
-        systemPrompt: prefs.jevSystemPrompt, trace: { [weak store] in
-        guard let store, store.messageAdmission.allows(batch.scope) else { return }
+        systemPrompt: prefs.jevSystemPrompt, trace: { [weak self, weak store] in
+        guard let self, generation == current, let store, store.messageAdmission.allows(batch.scope) else { return }
         store.log.record($0)
       })
       let keys = Set(batch.messages.map(\.key))
@@ -93,18 +119,22 @@ import QundaoCore
       for chunk in chunks {
         try Task.checkCancellation()
         guard generation == current, store.messageAdmission.allows(batch.scope) else { throw CancellationError() }
-        let part = try await client.decide(messages: chunk, context: context.reversed(), names: prefs.names,
-                                           keywords: prefs.keywords, selfID: selfID)
+        let part = try await evaluate(client, chunk, context.reversed(), prefs, selfID)
         results += part
       }
       try Task.checkCancellation()
       guard generation == current, store.preferences.accountID == batch.scope.account,
             store.preferences.jevConfiguration == prefs.jevConfiguration,
             store.preferences.jevSystemPrompt == prefs.jevSystemPrompt,
+            store.preferences.names == prefs.names, store.preferences.keywords == prefs.keywords,
             store.preferences.decisionThreshold == prefs.decisionThreshold,
             store.preferences.selectedGroups.contains(batch.scope.group),
             store.snapshot.decisionBatches?.contains(where: { $0.id == batch.id }) == true else { return }
-      let related = results.contains { $0.isRelated(threshold: prefs.decisionThreshold) }
+      let latest = refreshed(batch, store: store)
+      let currentSelfID = store.activeAccount?.subjectID ?? selfID
+      let ownKeys = Set(latest.messages.filter { !$0.senderID.isEmpty && $0.senderID == currentSelfID }.map(\.key))
+      let eligible = results.filter { !ownKeys.contains($0.messageKey) }
+      let related = eligible.contains { $0.isRelated(threshold: prefs.decisionThreshold) }
       store.log.record(DiagnosticRecord(category: .jev, event: "整批决策路由", correlationID: batch.id.uuidString, scope: batch.scope.key,
         output: DiagnosticRecord.safeText(try? JSONSerialization.data(withJSONObject: [
           "消息数": batch.messages.count, "分段数": chunks.count, "相关": related,
@@ -112,9 +142,8 @@ import QundaoCore
           "结果": results.map { ["消息键": $0.messageKey, "相关概率": $0.relevance, "回应概率": $0.needsResponse] as [String: Any] }
         ]))))
       if related, !batch.fallbackTriggered { store.enqueue(batch.scope.group) }
-      for result in results where result.needsResponse >= prefs.decisionThreshold {
-        if let message = batch.messages.first(where: { $0.key == result.messageKey }),
-           message.senderID.isEmpty || message.senderID != selfID {
+      for result in eligible where result.needsResponse >= prefs.decisionThreshold {
+        if let message = latest.messages.first(where: { $0.key == result.messageKey }) {
           store.addAttention(Attention(message: message, groupName: name, title: "\(message.sender) 可能需要你回应",
             reason: "Jev 判断需回应的概率为 \(Int(result.needsResponse * 100))%；请结合原文确认", definite: false))
         }

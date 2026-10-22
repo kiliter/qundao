@@ -143,5 +143,6 @@ private struct AddGroupsSheet: View {
       .background(P5.mainPaper).foregroundStyle(P5.ink).tint(P5.red)
       .buttonStyle(P5ButtonStyle(compact: true)).preferredColorScheme(.light)
       .onChange(of: store.groups.map(\.id)) { _, ids in selected.formIntersection(ids) }
+      .onChange(of: store.preferences.accountID) { _, _ in dismiss() }
   }
 }

@@ -32,22 +32,14 @@ extension AppStore {
   }
 
   var pendingFocusCount: Int { pendingAttention.entries.count }
+  func captureFocusSelection(_ entries: [AttentionEntry]) -> ReadingSelection {
+    ReadingSelection(entries: entries, attentions: snapshot.attentions, account: preferences.accountID)
+  }
+  func readFocusSelection(_ selection: ReadingSelection) {
+    guard selection.account == preferences.accountID else { return }
+    setViewed(digestIDs: selection.digestIDs, attentionIDs: selection.attentionIDs)
+  }
   func readFocusEntries(_ entries: [AttentionEntry]) {
-    var digests: Set<UUID> = [], attentions: Set<String> = []
-    for entry in entries {
-      switch entry {
-      case .summary(let item) where item.accountID == preferences.accountID:
-        digests.insert(item.id)
-        // 并入卡片的「找你 / 需回应」提醒随摘要一起已阅，避免标签消失后提醒仍留在后台。
-        let keys = Set(item.evidence.map(\.key))
-        for attention in snapshot.attentions where attention.status != "done" && attention.message.accountID == item.accountID
-          && attention.message.groupID == item.groupID && keys.contains(attention.message.key) {
-          attentions.insert(attention.id)
-        }
-      case .response(let item) where item.message.accountID == preferences.accountID: attentions.insert(item.id)
-      default: break
-      }
-    }
-    setViewed(digestIDs: digests, attentionIDs: attentions)
+    readFocusSelection(captureFocusSelection(entries))
   }
 }

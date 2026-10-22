@@ -64,4 +64,58 @@ final class SnapshotSummarizerTests: XCTestCase {
       XCTFail("汇总证据非法不能推进标记")
     } catch { XCTAssertTrue(error.localizedDescription.contains("证据")) }
   }
+  func testReductionCannotCiteAnotherGroupOfNotes() async {
+    let messages = (1...3).map { message($0, String(repeating: "x", count: 700)) }
+    let allIDs = Set(messages.map(\.id))
+    var reachedReduction = false
+    do {
+      _ = try await SnapshotSummarizer(budget: 1000, names: [], keywords: [], selfID: "me").run(messages) { input, _ in
+        if let message = input.messages.first {
+          return AIResult(summary: String(repeating: "整理", count: 180), relevant: true,
+                          relevanceReason: "工作事项", evidenceIDs: [message.id], judgements: [])
+        }
+        reachedReduction = true
+        let visible = Set(allIDs.filter { input.notes.joined().contains("\"\($0)\"") })
+        let missing = try XCTUnwrap(allIDs.subtracting(visible).first)
+        return AIResult(summary: "引用了另一组的消息", relevant: true, relevanceReason: "伪造引用",
+                        evidenceIDs: [missing], judgements: [])
+      }
+      XCTFail("当前汇总输入以外的消息即使属于整个快照也不能引用")
+    } catch { XCTAssertTrue(error.localizedDescription.contains("证据")) }
+    XCTAssertTrue(reachedReduction)
+  }
+  func testSingleOversizedCombinedCharacterIsFullySplit() async throws {
+    let text = "a" + String(repeating: "\u{301}", count: 1500)
+    XCTAssertEqual(text.count, 1)
+    var received = ""
+    _ = try await SnapshotSummarizer(budget: 1000, names: [], keywords: [], selfID: "me").run([message(1, text)]) { input, _ in
+      XCTAssertLessThanOrEqual(try input.encoded().count, 1000)
+      received += input.messages.map(\.text).joined()
+      return self.result()
+    }
+    XCTAssertEqual(Array(received.utf8), Array(text.utf8))
+  }
+  func testLongNotesKeepWholeEscapedEvidenceIDsAndOnlyExposeVisibleReferences() async throws {
+    let messages = (1...3).map { n in
+      Message(id: "M\(n)-\"\\" + String(repeating: "x", count: 220), accountID: "a", groupID: "g",
+              senderID: "s", sender: "同事", text: String(repeating: "正文", count: 500), timestamp: Int64(n))
+    }
+    let tokens = try Dictionary(uniqueKeysWithValues: messages.map {
+      ($0.id, String(decoding: try JSONEncoder().encode($0.id), as: UTF8.self))
+    })
+    var visibleDuringReduction = Set<String>()
+    _ = try await SnapshotSummarizer(budget: 1200, names: [], keywords: [], selfID: "me").run(messages) { input, allowed in
+      XCTAssertLessThanOrEqual(try input.encoded().count, 1200)
+      if let message = input.messages.first {
+        return AIResult(summary: String(repeating: "完整整理", count: 140), relevant: true,
+                        relevanceReason: "工作事项", evidenceIDs: [message.id], judgements: [])
+      }
+      let visible = Set(tokens.filter { _, token in input.notes.contains { $0.contains(token) } }.keys)
+      XCTAssertEqual(allowed, visible)
+      visibleDuringReduction.formUnion(visible)
+      return AIResult(summary: "继续汇总", relevant: !allowed.isEmpty, relevanceReason: "工作事项",
+                      evidenceIDs: allowed.sorted(), judgements: [])
+    }
+    XCTAssertEqual(visibleDuringReduction, Set(messages.map(\.id)), "证据 ID 不能在拆片时被切断或丢失")
+  }
 }

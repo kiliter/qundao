@@ -89,10 +89,13 @@ public final class SnapshotPersistence {
     if let database { return database }
     try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true,
                                             attributes: [.posixPermissions: 0o700])
+    // 备份恢复可能带回较宽权限，打开既有数据时也要重新限制。
+    try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: directory.path)
     let path = databaseURL.path
     if !FileManager.default.fileExists(atPath: path) {
       FileManager.default.createFile(atPath: path, contents: nil, attributes: [.posixPermissions: 0o600])
     }
+    try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path)
     let db = try SQLiteDatabase(path: path)
     try db.execute("""
       PRAGMA journal_mode = WAL;
@@ -107,7 +110,9 @@ public final class SnapshotPersistence {
       """)
     // WAL 附属文件同样只允许本人读写。
     for suffix in ["-wal", "-shm"] {
-      try? FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path + suffix)
+      if FileManager.default.fileExists(atPath: path + suffix) {
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: path + suffix)
+      }
     }
     database = db
     return db
@@ -132,6 +137,9 @@ public final class SnapshotPersistence {
   }
 
   private func write(_ snapshot: AppSnapshot, migrated: Bool) throws {
+    // 编码和数据库操作都可能失败；任何失败都不能污染下次增量比较基准。
+    stagedItems = [:]
+    defer { stagedItems = [:] }
     let db = try open()
     var next = committed ?? Committed()
     var pending = Pending()
@@ -146,7 +154,6 @@ public final class SnapshotPersistence {
              into: &next, &pending)
     try diff("decisionBatches", snapshot.decisionBatches ?? [], key: { $0.id.uuidString },
              index: { (.text($0.scope.account), .text($0.scope.group), .null) }, into: &next, &pending)
-    defer { stagedItems = [:] }
     guard !pending.isEmpty else { commit(next); return }
     try db.transaction {
       for (key, data) in pending.metaWrites {

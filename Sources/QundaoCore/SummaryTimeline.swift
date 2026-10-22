@@ -37,6 +37,36 @@ public enum SummaryTimeline {
   }
 }
 
+/// 点击时固定摘要与并入提醒的范围；后续动画或异步处理不能扩大已阅范围。
+public struct ReadingSelection: Equatable {
+  public let account: String
+  public let digestIDs: Set<UUID>
+  public let attentionIDs: Set<String>
+
+  public init(entries: [AttentionEntry], attentions: [Attention], account: String) {
+    self.account = account
+    var digestIDs: Set<UUID> = [], attentionIDs: Set<String> = []
+    for entry in entries {
+      switch entry {
+      case .summary(let digest) where digest.accountID == account:
+        digestIDs.insert(digest.id)
+        let keys = Set(digest.evidence.map(\.key))
+        // 稍后提醒并未进入待阅卡片，批量已阅不能取消它的提醒时间。
+        for attention in attentions where attention.status == "pending"
+          && attention.message.accountID == account && attention.message.groupID == digest.groupID
+          && keys.contains(attention.message.key) {
+          attentionIDs.insert(attention.id)
+        }
+      case .response(let attention) where attention.message.accountID == account:
+        attentionIDs.insert(attention.id)
+      default: break
+      }
+    }
+    self.digestIDs = digestIDs
+    self.attentionIDs = attentionIDs
+  }
+}
+
 extension AppSnapshot {
   /// 只更新调用时指定的本地记录。账号、摘要成功标记和 Alpha 未读数保持独立。
   public mutating func markViewed(account: String, digestIDs: Set<UUID> = [],

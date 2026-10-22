@@ -2,7 +2,7 @@ import AppKit
 import QundaoCore
 import SwiftUI
 
-@MainActor private final class LogBrowser: ObservableObject {
+@MainActor final class LogBrowser: ObservableObject {
   @Published var category: DiagnosticCategory?
   @Published var pages: [DiagnosticPage] = []
   @Published var pageIndex = 0
@@ -15,15 +15,17 @@ import SwiftUI
   @Published var error: String?
   @Published var selected: DiagnosticRecord?
   private var version = UUID()
-  private let archive = EventLog.shared.diagnostics
+  private let archive: DiagnosticLogStore
   private var lastRevision: UInt64?
+  init(archive: DiagnosticLogStore = EventLog.shared.diagnostics) { self.archive = archive }
   var hasNewRecords: Bool { lastRevision != archive.revision }
   var rows: [DiagnosticRecord] { pages.indices.contains(pageIndex) ? pages[pageIndex].records : [] }
   var canNext: Bool { pages.indices.contains(pageIndex) && pages[pageIndex].next != nil }
   func observeUpdates() async {
     // 先订阅再读取，保证页面打开期间产生的日志也会被接收。
     let updates = archive.updates()
-    await first()
+    // 页面重显只恢复订阅；历史页及手动暂停的最新页都保留当前阅读位置。
+    if pages.isEmpty { await first() }
     for await revision in updates {
       guard !Task.isCancelled else { break }
       latestRevision = revision
@@ -40,15 +42,15 @@ import SwiftUI
     version = UUID()
     let current = version, category = category, size = pageSize, archive = archive, revision = archive.revision
     loading = true
+    defer { if version == current { loading = false } }
     do {
       let page = try await Task.detached { try archive.page(category: category, limit: size) }.value
-      guard version == current else { return }
+      guard version == current, !Task.isCancelled else { return }
       pages = [page]; pageIndex = 0; error = nil
       lastRevision = revision
       lastRefresh = Date()
       if following || selected == nil { selected = page.records.first }
     } catch { if version == current { self.error = error.localizedDescription } }
-    if version == current { loading = false }
   }
   func next() async {
     guard !loading, canNext, let cursor = pages[pageIndex].next else { return }

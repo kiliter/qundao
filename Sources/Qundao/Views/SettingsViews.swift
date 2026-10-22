@@ -140,8 +140,10 @@ struct ConnectionPage: View {
           SecureField("Alpha 访问令牌", text: $alpha).textFieldStyle(P5TextFieldStyle())
           HStack {
             Button("保存并连接") {
-              store.saveCredentials(alpha: alpha, cpa: cpa)
-              Task { await store.connect() }
+              do {
+                try store.saveCredentials(alpha: alpha, cpa: cpa)
+                Task { await store.connect() }
+              } catch { store.error = error.localizedDescription }
             }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(store.busy || store.loadingCredentials)
             Text(store.status).font(.caption).foregroundStyle(.secondary)
           }
@@ -170,8 +172,10 @@ struct ConnectionPage: View {
               } catch { store.error = error.localizedDescription }
             }
             Button("保存并获取模型") {
-              store.saveCredentials(alpha: alpha, cpa: cpa)
-              Task { await store.loadCatalog() }
+              do {
+                try store.saveCredentials(alpha: alpha, cpa: cpa)
+                Task { await store.loadCatalog() }
+              } catch { store.error = error.localizedDescription }
             }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(store.busy || store.loadingCredentials)
           }
           if !notice.isEmpty { Text(notice).font(.caption).foregroundStyle(.secondary) }

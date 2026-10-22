@@ -250,11 +250,13 @@ $("#reset").onclick=()=>{S.fold=false;$("#fold").checked=false;setData("three");
 setInterval(()=>{if(S.phase==="buffer"){renderBar();if(S.open)renderPipe()}},100);
 // 截图用：#open&phase=cpa&fold=1&hover=g2
 const q=new URLSearchParams(location.hash.slice(1));
-setData(q.get("data")||"three");setPhase(q.get("phase")||"idle");
+// 截图参数只接受本原型已有选项，非法值回到默认演示。
+const choice=(values,key,fallback)=>Object.prototype.hasOwnProperty.call(values,key)?key:fallback;
+setData(choice(SRC,q.get("data"),"three"));setPhase(choice(PHASES,q.get("phase"),"idle"));
 if(q.has("fold")){S.fold=true;$("#fold").checked=true}
 if(q.has("open")){S.open=true;S.pinned=true}
 renderAll();
-if(q.get("hover")){const c=document.querySelector(`[data-id="${q.get("hover")}"]`);c&&c.classList.add("hov")}
+if(q.get("hover"))[...document.querySelectorAll("[data-id]")].find(el=>el.dataset.id===q.get("hover"))?.classList.add("hov");
 </script>
 <style>.card.hov{background:var(--card-h);border-color:var(--line-h)}.card.hov .time{opacity:0}.card.hov .read{opacity:1}</style>
 </body></html>

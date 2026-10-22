@@ -25,24 +25,40 @@ public struct DiagnosticRecord: Codable, Identifiable {
   /// 仅接收请求体，禁止传入鉴权头；递归脱敏服务返回的密钥字段及已知密钥值。
   public static func safeText(_ data: Data?, secrets: [String] = []) -> String {
     guard let data else { return "" }
-    func scrub(_ value: Any) -> Any {
-      if let object = value as? [String: Any] {
-        return object.mapValues { scrub($0) }.map { key, value in
-          let normalized = key.lowercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")
-          return (key, ["authorization", "apikey", "accesstoken", "refreshtoken", "password", "secret"].contains(normalized) ? "[已隐藏]" as Any : value)
-        }.reduce(into: [String: Any]()) { $0[$1.0] = $1.1 }
+    func redact(_ text: String) -> String {
+      var result = text
+      for secret in secrets.filter({ !$0.isEmpty }).sorted(by: { $0.count > $1.count }) {
+        result = result.replacingOccurrences(of: secret, with: "[已隐藏]")
       }
-      if let array = value as? [Any] { return array.map(scrub) }
+      return result.replacingOccurrences(of: "(?i)Bearer\\s+[A-Za-z0-9._~+/=-]+",
+        with: "Bearer [已隐藏]", options: .regularExpression)
+    }
+    func scrub(_ value: Any, depth: Int = 0) -> Any {
+      if let object = value as? [String: Any] {
+        return object.reduce(into: [String: Any]()) { result, entry in
+          let (key, value) = entry
+          let normalized = key.lowercased().replacingOccurrences(of: "_", with: "").replacingOccurrences(of: "-", with: "")
+          result[redact(key)] = ["authorization", "apikey", "token", "accesstoken", "refreshtoken", "password", "secret"].contains(normalized)
+            ? "[已隐藏]" : scrub(value, depth: depth + 1)
+        }
+      }
+      if let array = value as? [Any] { return array.map { scrub($0, depth: depth + 1) } }
+      if let string = value as? String {
+        // Responses 的 content/output_text 常为内嵌 JSON 字符串；保持字符串协议形态，先解码脱敏再转义。
+        if depth < 12, let nested = try? JSONSerialization.jsonObject(with: Data(string.utf8)),
+           nested is [String: Any] || nested is [Any],
+           let cleaned = try? JSONSerialization.data(withJSONObject: scrub(nested, depth: depth + 1),
+             options: [.sortedKeys, .withoutEscapingSlashes]) {
+          return String(decoding: cleaned, as: UTF8.self)
+        }
+        return redact(string)
+      }
       return value
     }
-    var text: String
     if let json = try? JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed),
        let clean = try? JSONSerialization.data(withJSONObject: scrub(json), options: [.prettyPrinted, .sortedKeys, .fragmentsAllowed, .withoutEscapingSlashes]),
-       let string = String(data: clean, encoding: .utf8) { text = string }
-    else { text = String(decoding: data, as: UTF8.self) }
-    for secret in secrets where !secret.isEmpty { text = text.replacingOccurrences(of: secret, with: "[已隐藏]") }
-    text = text.replacingOccurrences(of: "(?i)Bearer\\s+[A-Za-z0-9._~+/-]+", with: "Bearer [已隐藏]", options: .regularExpression)
-    return text
+       let string = String(data: clean, encoding: .utf8) { return string }
+    return redact(String(decoding: data, as: UTF8.self))
   }
   /// 仅在阅读时展开 Responses 的 input/content、output_text 等内嵌 JSON；归档仍保留协议结构。
   public static func readableText(_ text: String) -> String {

@@ -4,13 +4,17 @@ import QundaoCore
 
 final class EventLog: @unchecked Sendable {
   static let shared = EventLog()
-  let directory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[
-    0
-  ].appendingPathComponent("Qundao/Logs", isDirectory: true)
-  let diagnostics = DiagnosticLogStore(directory: FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
-    .appendingPathComponent("Qundao/Logs/Diagnostics", isDirectory: true))
+  let directory: URL
+  let diagnostics: DiagnosticLogStore
+  init(directory: URL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+    .appendingPathComponent("Qundao/Logs", isDirectory: true)) {
+    self.directory = directory
+    diagnostics = DiagnosticLogStore(directory: directory.appendingPathComponent("Diagnostics", isDirectory: true))
+  }
   /// 日志写入（含 fsync）放到串行队列，保持顺序且不阻塞主线程界面与动画。
   private let queue = DispatchQueue(label: "qundao.eventlog", qos: .utility)
+  /// 退出或临时目录清理前等待已排队日志落盘；只从日志队列之外调用。
+  func flush() { queue.sync {} }
   func record(_ item: DiagnosticRecord) {
     queue.async { [diagnostics] in
       do { try diagnostics.append(item) }

@@ -43,10 +43,15 @@ public struct SnapshotSummarizer {
     var fragments: [Message] = []
     func split(_ message: Message) throws {
       if try input([message], stage: "未读片段整理").encoded().count <= budget { fragments.append(message); return }
-      guard message.text.count > 1 else { throw AppFailure.message("模型预算不足以容纳消息元数据或用户配置") }
-      let middle = message.text.index(message.text.startIndex, offsetBy: message.text.count / 2)
       var left = message, right = message
-      left.text = String(message.text[..<middle]); right.text = String(message.text[middle...])
+      if message.text.count > 1 {
+        let middle = message.text.index(message.text.startIndex, offsetBy: message.text.count / 2)
+        left.text = String(message.text[..<middle]); right.text = String(message.text[middle...])
+      } else if message.text.unicodeScalars.count > 1 {
+        let scalars = message.text.unicodeScalars
+        let middle = scalars.index(scalars.startIndex, offsetBy: scalars.count / 2)
+        left.text = String(scalars[..<middle]); right.text = String(scalars[middle...])
+      } else { throw AppFailure.message("模型预算不足以容纳消息元数据或用户配置") }
       try split(left); try split(right)
     }
     for message in messages { try split(message) }
@@ -58,50 +63,95 @@ public struct SnapshotSummarizer {
       batch.append(fragment)
     }
     if !batch.isEmpty { batches.append(batch) }
-    var notes: [String] = []
+    var notes: [SummaryNote] = []
     for batch in batches {
       try Task.checkCancellation()
       let result = try await request(input(batch, stage: "未读片段整理"), Set(batch.map(\.id)))
       try result.validate(allowedIDs: Set(batch.map(\.id)))
-      notes.append(String(decoding: try JSONEncoder().encode(result), as: UTF8.self))
+      notes.append(try SummaryNote(result))
     }
     // 所有分段均完成后才汇总；极长中间输出也要完整分片送入下一层，绝不 prefix 截断。
     for level in 1...12 {
       try Task.checkCancellation()
       let stage = "完整快照汇总第\(level)层"
-      if try input(notes: notes, stage: stage).encoded().count <= budget {
-        let result = try await request(input(notes: notes, stage: stage), ids)
-        try result.validate(allowedIDs: ids); try Task.checkCancellation(); return result
+      if try input(notes: notes.map(\.text), stage: stage).encoded().count <= budget {
+        let references = Set(notes.flatMap(\.referenceIDs))
+        let result = try await request(input(notes: notes.map(\.text), stage: stage), references)
+        try result.validate(allowedIDs: references); try Task.checkCancellation(); return result
       }
-      var pieces: [String] = []
-      func splitNote(_ text: String) throws {
+      var pieces: [SummaryNote] = []
+      func splitNote(_ note: SummaryNote) throws {
         // 每片至多使用半个净预算，使下一层有空间合并多个片段。
         let overhead = try input(notes: [], stage: stage).encoded().count
         let target = overhead + (budget - overhead) / 2
-        if try input(notes: [text], stage: stage).encoded().count <= target { pieces.append(text); return }
-        guard text.count > 1 else { throw AppFailure.message("模型预算无法容纳汇总输入") }
-        let middle = text.index(text.startIndex, offsetBy: text.count / 2)
-        try splitNote(String(text[..<middle])); try splitNote(String(text[middle...]))
+        if try input(notes: [note.text], stage: stage).encoded().count <= target { pieces.append(note); return }
+        let left: SummaryNote, right: SummaryNote
+        do { (left, right) = try note.split() }
+        catch {
+          // 一条完整 ID 可能超过半预算，仍允许它占用本层完整预算。
+          if try input(notes: [note.text], stage: stage).encoded().count <= budget { pieces.append(note); return }
+          throw error
+        }
+        try splitNote(left); try splitNote(right)
       }
       for note in notes { try splitNote(note) }
-      var groups: [[String]] = [], current: [String] = []
+      var groups: [[SummaryNote]] = [], current: [SummaryNote] = []
       for piece in pieces {
-        if !current.isEmpty, try input(notes: current + [piece], stage: stage).encoded().count > budget {
+        if !current.isEmpty, try input(notes: (current + [piece]).map(\.text), stage: stage).encoded().count > budget {
           groups.append(current); current = []
         }
         current.append(piece)
       }
       if !current.isEmpty { groups.append(current) }
-      var next: [String] = []
+      var next: [SummaryNote] = []
       for group in groups {
         try Task.checkCancellation()
-        let result = try await request(input(notes: group, stage: stage), ids)
-        try result.validate(allowedIDs: ids)
-        next.append(String(decoding: try JSONEncoder().encode(result), as: UTF8.self))
+        let references = Set(group.flatMap(\.referenceIDs))
+        let result = try await request(input(notes: group.map(\.text), stage: stage), references)
+        try result.validate(allowedIDs: references)
+        next.append(try SummaryNote(result))
       }
       notes = next
     }
     throw AppFailure.message("分段汇总未能在预算内收敛，保留任务与成功标记等待重试")
+  }
+}
+
+/// 引用随实际传入的整理文本流转，不能借用同一快照内尚未传入的其他消息。
+private struct SummaryNote {
+  let text: String
+  private let referenceTokens: [String: String]
+  var referenceIDs: Set<String> { Set(referenceTokens.keys) }
+  init(_ result: AIResult) throws {
+    text = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    let ids = Set(result.evidenceIDs + result.judgements.map(\.messageID))
+    referenceTokens = try Dictionary(uniqueKeysWithValues: ids.map { id in
+      (id, String(decoding: try JSONEncoder().encode(id), as: UTF8.self))
+    })
+  }
+  private init(text: String, referenceTokens: [String: String]) {
+    self.text = text
+    self.referenceTokens = referenceTokens.filter { text.contains($0.value) }
+  }
+  func split() throws -> (SummaryNote, SummaryNote) {
+    let scalars = text.unicodeScalars
+    guard scalars.count > 1 else { throw AppFailure.message("模型预算无法容纳汇总输入") }
+    var middle = scalars.index(scalars.startIndex, offsetBy: scalars.count / 2)
+    // 不把原始消息 ID 的 JSON 字符串拆断；只有出现完整引用的片段才能沿用该 ID。
+    for token in referenceTokens.values {
+      var start = text.startIndex
+      while let range = text.range(of: token, range: start..<text.endIndex) {
+        if range.lowerBound < middle && middle < range.upperBound {
+          middle = range.lowerBound == text.startIndex ? range.upperBound : range.lowerBound
+        }
+        start = range.upperBound
+      }
+    }
+    guard middle > text.startIndex, middle < text.endIndex else {
+      throw AppFailure.message("模型预算无法容纳完整证据消息 ID")
+    }
+    return (SummaryNote(text: String(scalars[..<middle]), referenceTokens: referenceTokens),
+            SummaryNote(text: String(scalars[middle...]), referenceTokens: referenceTokens))
   }
 }
 

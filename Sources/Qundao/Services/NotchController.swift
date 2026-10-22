@@ -936,12 +936,16 @@ private struct NotchThreadRow: View {
 
   private func markRead() {
     guard !leaving else { return }
-    let entries = thread.entries
-    guard !reduceMotion else { store.readFocusEntries(entries); return }
+    let selection = store.captureFocusSelection(thread.entries)
+    guard !reduceMotion else { store.readFocusSelection(selection); return }
     leaving = true
     Task { @MainActor in
       try? await Task.sleep(nanoseconds: 540_000_000)
-      store.readFocusEntries(entries)
+      store.readFocusSelection(selection)
+      // 同群在动画期间可能新增待阅内容，保存失败也会保留原记录；幸存行必须恢复可见。
+      var transaction = Transaction()
+      transaction.disablesAnimations = true
+      withTransaction(transaction) { leaving = false }
     }
   }
   private func startSweep() {

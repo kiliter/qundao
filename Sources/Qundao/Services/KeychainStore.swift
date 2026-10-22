@@ -37,13 +37,8 @@ struct KeychainStore {
     let root = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".codex")
     // 仅允许用户明确点击导入；从既有 CPA 配置读取，绝不导入 ChatGPT 登录凭据。
     let config = try String(contentsOf: root.appendingPathComponent("config.toml"), encoding: .utf8)
-    guard config.contains("https://cpa.bgp.kiliter.cn/v1") else {
-      throw AppFailure.message("Codex 中未找到 CPA 配置")
-    }
+    let importer = try CodexCredentialImport(configuration: config)
     let data = try Data(contentsOf: root.appendingPathComponent("auth.json"))
-    guard let obj = try JSONSerialization.jsonObject(with: data) as? [String: Any],
-      let key = obj["OPENAI_API_KEY"] as? String, !key.isEmpty
-    else { throw AppFailure.message("Codex 中没有可导入的 API Key，请手动填写") }
-    return key
+    return try importer.apiKey(from: data)
   }
 }

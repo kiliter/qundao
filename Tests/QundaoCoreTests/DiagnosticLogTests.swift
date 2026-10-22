@@ -2,6 +2,35 @@ import XCTest
 @testable import QundaoCore
 
 final class DiagnosticLogTests: XCTestCase {
+  func testRedactionDoesNotRewriteJSONDelimiters() throws {
+    let data = try JSONSerialization.data(withJSONObject: ["content": "合成\"文本"])
+    let text = DiagnosticRecord.safeText(data, secrets: ["\""])
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: String])
+    XCTAssertEqual(json["content"], "合成[已隐藏]文本")
+  }
+
+  func testKnownSecretsAreRemovedBeforeJSONEscapingIncludingObjectKeys() throws {
+    let secret = "synthetic-\"key\\with\nnewline"
+    let data = try JSONSerialization.data(withJSONObject: [secret: "值", "echo": "前缀" + secret + "后缀"])
+    let text = DiagnosticRecord.safeText(data, secrets: [secret])
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: String])
+    XCTAssertFalse(json.keys.contains(secret))
+    XCTAssertFalse(json.values.joined().contains(secret))
+    XCTAssertEqual(json["echo"], "前缀[已隐藏]后缀")
+  }
+
+  func testEmbeddedJSONKeepsProtocolShapeWithoutLeakingCredentials() throws {
+    let secret = "synthetic-\"key\\with\nnewline"
+    let nested = try JSONSerialization.data(withJSONObject: ["echo": secret, "api_key": "other-synthetic-key",
+      "token": "another-synthetic-token", "message": "普通合成消息"])
+    let data = try JSONSerialization.data(withJSONObject: ["content": String(decoding: nested, as: UTF8.self)])
+    let text = DiagnosticRecord.safeText(data, secrets: [secret])
+    let outer = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(text.utf8)) as? [String: String])
+    let inner = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(try XCTUnwrap(outer["content"]).utf8)) as? [String: String])
+    XCTAssertEqual(inner["message"], "普通合成消息")
+    for key in ["echo", "api_key", "token"] { XCTAssertEqual(inner[key], "[已隐藏]") }
+  }
+
   private func archive(_ max: UInt64 = 10000000) -> DiagnosticLogStore {
     let url = FileManager.default.temporaryDirectory.appendingPathComponent("qundao-logs-test-" + UUID().uuidString)
     addTeardownBlock { try? FileManager.default.removeItem(at: url) }

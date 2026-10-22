@@ -268,11 +268,13 @@ $("#push").onclick=()=>{if(!S.groups.some(g=>g.id==="g5"))S.groups.unshift(JSON.
 $("#reset").onclick=()=>{S.fold=false;$("#fold").checked=false;S.phase="idle";S.data="three";S.groups=JSON.parse(JSON.stringify(SRC.three));all()};
 setInterval(()=>{if(S.phase==="buffer"){renderBar();if(S.open)renderStatus()}},200);
 const q=new URLSearchParams(location.hash.slice(1));
-S.phase=q.get("phase")||"idle";S.data=q.get("data")||"three";S.groups=JSON.parse(JSON.stringify(SRC[S.data]));
+// 截图参数只接受本原型已有选项，非法值回到默认演示。
+const choice=(values,key,fallback)=>Object.prototype.hasOwnProperty.call(values,key)?key:fallback;
+S.phase=choice(PH,q.get("phase"),"idle");S.data=choice(SRC,q.get("data"),"three");S.groups=JSON.parse(JSON.stringify(SRC[S.data]));
 if(q.has("fold")){S.fold=true;$("#fold").checked=true}
 if(q.has("open")){S.open=true;S.pinned=true;isl.style.transition="none"}
 all();
-if(q.get("hover"))document.querySelector(`[data-id="${q.get("hover")}"]`)?.classList.add("hov");
+if(q.get("hover"))[...document.querySelectorAll("[data-id]")].find(el=>el.dataset.id===q.get("hover"))?.classList.add("hov");
 if(q.has("cut")){const c=$("#cutin");c.classList.add("show");c.style.animation="none";c.style.transform="rotate(-8deg)"}
 </script>
 </body></html>

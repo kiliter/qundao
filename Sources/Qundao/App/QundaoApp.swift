@@ -1,4 +1,5 @@
 import AppKit
+import QundaoCore
 import SwiftUI
 import UserNotifications
 
@@ -124,6 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     AppStore.shared.stop()
     AppStore.shared.saveNow()
     EventLog.shared.write("信息", "应用退出")
+    EventLog.shared.flush()
   }
   nonisolated func userNotificationCenter(
     _ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
@@ -131,7 +133,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
   ) {
     let id = response.notification.request.content.userInfo["attentionID"] as? String
     Task { @MainActor in
-      if let id, let item = AppStore.shared.snapshot.attentions.first(where: { $0.id == id }) {
+      if let item = NotificationRouting.attention(id: id, records: AppStore.shared.snapshot.attentions,
+                                                  accountID: AppStore.shared.preferences.accountID) {
         AppStore.shared.detail = item
       }
       self.showMain()
@@ -143,6 +146,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void
   ) { completionHandler([.banner, .sound]) }
 }
+
+/// 历史系统通知可能在切换账号后才被点击，不能借此打开其他账号的聊天原文。
+enum NotificationRouting {
+  static func attention(id: String?, records: [Attention], accountID: String) -> Attention? {
+    guard let id, !accountID.isEmpty else { return nil }
+    return records.first { $0.id == id && $0.message.accountID == accountID }
+  }
+}
+
 private struct WindowReader: NSViewRepresentable {
   func makeNSView(context: Context) -> NSView {
     let view = NSView()

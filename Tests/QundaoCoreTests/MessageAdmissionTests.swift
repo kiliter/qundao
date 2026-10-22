@@ -60,6 +60,32 @@ import XCTest
       XCTAssertTrue(RealtimeDecision.local(batches[0].messages, preferences: Preferences(), selfID: "self").contains(where: \.related))
     }
   }
+  func testSenderEnrichmentUpdatesPendingCopiesWithoutResettingDeadlineOrContent() throws {
+    var state = AppSnapshot()
+    var original = message("yes@chatroom", text: "@所有人 合成自身消息")
+    original.senderID = ""; original.sender = ""
+    let start = Date(timeIntervalSince1970: 100)
+    state.ingestRealtime([original], admission: policy, selfID: "self", now: start)
+    let scope = ConversationScope(account: "a", group: original.groupID)
+    state.decisionBatches = [DecisionBatch(scope: scope, messages: [original])]
+    state.attentions = [Attention(message: original, groupName: "群", title: "找你", reason: "待核对", definite: true)]
+    var incoming = original; incoming.senderID = "self"; incoming.sender = "本人"
+    incoming.text = "重复响应不能替换原正文"; incoming.timestamp = 2_000
+    XCTAssertEqual(state.ingestRealtime([incoming], admission: policy, selfID: "self", now: start.addingTimeInterval(2)), 0)
+    let buffered = try XCTUnwrap(state.realtimeBuffer?.entries[original.key])
+    XCTAssertEqual(buffered.receivedAt, start)
+    for enriched in [state.messages[0], buffered.message, state.decisionBatches![0].messages[0]] {
+      XCTAssertEqual(enriched.senderID, "self"); XCTAssertEqual(enriched.sender, "本人")
+      XCTAssertEqual(enriched.text, original.text); XCTAssertEqual(enriched.timestamp, original.timestamp)
+      XCTAssertEqual(RuleEngine.classify(enriched, selfID: "self", names: [], keywords: []), .none)
+    }
+    XCTAssertTrue(state.attentions.isEmpty)
+    var drained = try XCTUnwrap(state.realtimeBuffer)
+    XCTAssertEqual(drained.flush(account: "a", capacity: 10, interval: 3, now: start.addingTimeInterval(3)).count, 1)
+    state.realtimeBuffer = drained
+    state.ingestRealtime([incoming], admission: policy, selfID: "self", now: start.addingTimeInterval(4))
+    XCTAssertTrue(state.realtimeBuffer!.entries.isEmpty, "补齐身份不能把已提交的消息重新入池")
+  }
   func testRestoreAndWhitelistRemovalPurgeExcludedCachesAndBothTaskSources() throws {
     var state = AppSnapshot()
     let allowed = message("yes@chatroom"), excluded = message("no@chatroom"), privateMessage = message("private")

@@ -54,8 +54,8 @@ import UserNotifications
   @ObservationIgnored var cpaKey = ""
   @ObservationIgnored var jevKey = ""
   @ObservationIgnored lazy var jevMonitor = JevMonitor(store: self)
-  @ObservationIgnored let disk = DiskStore()
-  @ObservationIgnored let log = EventLog.shared
+  @ObservationIgnored let disk: DiskStore
+  @ObservationIgnored let log: EventLog
   @ObservationIgnored let semantic = SemanticFilter()
   @ObservationIgnored private var pollTask: Task<Void, Never>?
   @ObservationIgnored private var streamTask: Task<Void, Never>?
@@ -69,6 +69,7 @@ import UserNotifications
   @ObservationIgnored private var connectionRequest: UUID?
   @ObservationIgnored private var syncRequest: UUID?
   @ObservationIgnored private var catalogLoading = false
+  @ObservationIgnored private var catalogGeneration = UUID()
   @ObservationIgnored private var periodicClock = PeriodicSummaryClock()
   /// 数组相等比较对未修改的共享存储是 O(1)，因此每次快照写入的检查开销很小。
   private func snapshotChanged(from old: AppSnapshot) {
@@ -194,7 +195,10 @@ import UserNotifications
     groupRefreshTask = nil
     groupStates.cancel()
   }
-  init() {
+  init(disk: DiskStore = DiskStore(), configFile: AppConfigFile = AppConfigFile(), log: EventLog = .shared) {
+    self.disk = disk
+    self.configFile = configFile
+    self.log = log
     do { snapshot = try disk.load() } catch {
       persistenceHealthy = false
       self.error = "本地状态无法读取，未覆盖旧文件。请先备份并检查：\(disk.directory.path)"
@@ -212,7 +216,7 @@ import UserNotifications
   }
   /// 配置文件 ~/.config/qundao/config.toml 是密钥与模型/规则配置的唯一来源；
   /// 不存在时从旧版钥匙串一次性迁移，之后不再访问钥匙串，避免重签后反复弹出授权。
-  @ObservationIgnored let configFile = AppConfigFile()
+  @ObservationIgnored let configFile: AppConfigFile
   @ObservationIgnored private var configWatcher: ConfigWatcher?
   /// 最近一次与文件一致的配置；按语义比较，避免改写用户手写的注释与格式。
   @ObservationIgnored private var lastConfig: AppConfig?
@@ -258,20 +262,23 @@ import UserNotifications
     if error?.hasPrefix("配置文件格式错误") == true { error = nil }
     guard config != lastConfig else { return }
     lastConfig = config
-    let oldAlpha = alphaToken, oldPrefs = preferences, oldJev = jevKey
+    let oldAlpha = alphaToken, oldCPA = cpaKey, oldPrefs = preferences, oldJev = jevKey
     alphaToken = config.alphaToken; cpaKey = config.cpaKey; jevKey = config.jevKey
     config.apply(to: &snapshot.preferences)
     save()
     if initial { return }
     log.write("信息", "配置文件已重新加载")
+    if oldCPA != cpaKey { invalidateCatalog() }
     if oldAlpha != alphaToken {
+      invalidateConnection()
       groupStates.reset(account: preferences.accountID, cachedGroups: snapshot.groups)
       ensureGroupStateRefresh()
-      if running { start() }
+      if running { configured ? start() : stop() }
     }
     if running && (oldJev != jevKey || oldPrefs.decisionMethod != preferences.decisionMethod
       || oldPrefs.decisionThreshold != preferences.decisionThreshold
       || oldPrefs.jevSystemPrompt != preferences.jevSystemPrompt
+      || oldPrefs.names != preferences.names || oldPrefs.keywords != preferences.keywords
       || oldPrefs.jevConfiguration != preferences.jevConfiguration) { jevMonitor.start() }
   }
   /// 把当前密钥和偏好写回配置文件；内容未变时不写。
@@ -289,7 +296,7 @@ import UserNotifications
     guard persistenceHealthy, pendingSave == nil else { return }
     pendingSave = Task { [weak self] in
       try? await Task.sleep(nanoseconds: 250_000_000)
-      guard let self else { return }
+      guard !Task.isCancelled, let self else { return }
       self.pendingSave = nil
       self.saveNow()
     }
@@ -318,10 +325,12 @@ import UserNotifications
     save()
     if running && (old.decisionMethod != preferences.decisionMethod || old.decisionThreshold != preferences.decisionThreshold
       || old.jevSystemPrompt != preferences.jevSystemPrompt
+      || old.names != preferences.names || old.keywords != preferences.keywords
       || old.jevConfiguration != preferences.jevConfiguration) { jevMonitor.start() }
   }
   /// 草稿只有成功写入配置文件后才生效；失败时保留当前运行配置。
   func saveModelPrompts(summary: String, jev: String) throws {
+    try requireLoadedConfiguration()
     try ModelPrompts.validate(summary: summary, jev: jev)
     var candidate = AppConfig(preferences: preferences, alpha: alphaToken, cpa: cpaKey, jev: jevKey)
     candidate.cpaSystemPrompt = ModelPrompts.effectiveSummary(summary) == ModelPrompts.summaryDefault ? nil : summary
@@ -335,6 +344,7 @@ import UserNotifications
     log.write("信息", "模型提示词已保存")
   }
   func saveDecisionConnection(_ config: JevConfiguration, key: String) throws {
+    try requireLoadedConfiguration()
     _ = try config.endpoint()
     jevMonitor.stop()
     let oldKey = jevKey, oldPrefs = snapshot.preferences
@@ -360,21 +370,41 @@ import UserNotifications
     if running { jevMonitor.start() }
     log.write("信息", "更新监听白名单", "即时与周期均仅处理 \(preferences.selectedGroups.count) 个白名单群")
   }
-  func saveCredentials(alpha: String, cpa: String) {
-    do {
-      alphaToken = alpha
-      cpaKey = cpa
-      try writeConfig()
+  func saveCredentials(alpha: String, cpa: String) throws {
+    try requireLoadedConfiguration()
+    let candidate = AppConfig(preferences: preferences, alpha: alpha, cpa: cpa, jev: jevKey)
+    // 先提交文件再替换运行值；失败不能留下未保存的密钥或重启旧连接。
+    do { try configFile.save(candidate) } catch {
+      self.error = "连接配置保存失败：\(error.localizedDescription)"
+      log.write("错误", "连接配置保存失败")
+      throw error
+    }
+    let alphaChanged = alphaToken != alpha, cpaChanged = cpaKey != cpa
+    alphaToken = alpha
+    cpaKey = cpa
+    lastConfig = candidate
+    if cpaChanged { invalidateCatalog() }
+    if alphaChanged {
+      invalidateConnection()
       // 连接信息变化后，之前正在读取的响应不能覆盖新连接的状态。
       groupStates.reset(account: preferences.accountID, cachedGroups: snapshot.groups)
       ensureGroupStateRefresh()
-      error = nil
-      status = "连接信息已保存"
-      log.write("信息", "连接配置已保存")
-    } catch {
-      self.error = error.localizedDescription
-      log.write("错误", "连接配置保存失败")
+      if running { configured ? start() : stop() }
     }
+    error = nil
+    status = "连接信息已保存"
+    log.write("信息", "连接配置已保存")
+  }
+  private func requireLoadedConfiguration() throws {
+    guard !loadingCredentials else { throw AppFailure.message("配置正在加载，请稍后保存") }
+  }
+  private func invalidateConnection() {
+    connectionRequest = nil
+    busy = catalogLoading
+  }
+  private func invalidateCatalog() {
+    catalogGeneration = UUID()
+    models = []
   }
   func connect() async {
     let request = UUID()
@@ -397,6 +427,7 @@ import UserNotifications
       guard !accounts.isEmpty else { throw AppFailure.message("Alpha 没有已就绪的微信账号") }
       if !accounts.contains(where: { $0.id == preferences.accountID }) {
         stop()
+        clearAccountSelection()
         snapshot.preferences.accountID = accounts[0].id
         snapshot.preferences.selectedGroups = []
         snapshot.preferences.groupsInitialized = false
@@ -430,6 +461,8 @@ import UserNotifications
     do {
       try await fetchCatalog()
       error = nil
+    } catch is CancellationError {
+      // 连接配置已更新，旧目录请求失效；不能用它覆盖新连接的界面状态。
     } catch {
       self.error = error.localizedDescription
       log.write("错误", "模型目录读取失败", error.localizedDescription)
@@ -437,7 +470,11 @@ import UserNotifications
   }
   private func fetchCatalog() async throws {
     guard !cpaKey.isEmpty else { throw AppFailure.message("请先保存 CPA API Key") }
-    models = try await CPAClient(key: cpaKey).catalog()
+    let current = catalogGeneration
+    let loaded = try await CPAClient(key: cpaKey).catalog()
+    try Task.checkCancellation()
+    guard current == catalogGeneration else { throw CancellationError() }
+    models = loaded
     if !models.contains(where: { $0.id == preferences.model }) {
       snapshot.preferences.model =
         models.first(where: { $0.id == "gpt-6.1-sol" })?.id ?? models[0].id
@@ -457,6 +494,7 @@ import UserNotifications
     stop()
     connectionRequest = nil
     busy = catalogLoading
+    clearAccountSelection()
     snapshot.preferences.accountID = id
     snapshot.preferences.selectedGroups = []
     snapshot.preferences.groupsInitialized = false
@@ -465,6 +503,11 @@ import UserNotifications
     summaries.retainGroups(admission: messageAdmission)
     save()
     Task { await connect() }
+  }
+  private func clearAccountSelection() {
+    detail = nil
+    attentionGroupID = nil
+    summaryGroupID = nil
   }
   func start() {
     guard persistenceHealthy else {

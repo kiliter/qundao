@@ -30,6 +30,16 @@ final class CoreTests: XCTestCase {
     }
     XCTAssertEqual(
       RuleEngine.classify(message("谁找我？"), selfID: "me", names: ["嘉林"], keywords: []), .none)
+    XCTAssertEqual(
+      RuleEngine.classify(message("@嘉林三 帮忙确认"), selfID: "me", names: ["嘉林"], keywords: []), .none)
+    XCTAssertEqual(
+      RuleEngine.classify(message("＠小嘉林 帮忙确认"), selfID: "me", names: ["嘉林"], keywords: []), .none)
+    XCTAssertEqual(
+      RuleEngine.classify(message("@嘉林三 帮忙确认，嘉林也请看一下"), selfID: "me", names: ["嘉林"], keywords: []),
+      .candidate("提到了你的称呼：嘉林"))
+    XCTAssertEqual(
+      RuleEngine.classify(message("@嘉林三 确认发布"), selfID: "me", names: ["嘉林"], keywords: ["发布"]),
+      .candidate("涉及关注事项：发布"))
   }
   func testKeywordOnlyCandidate() {
     if case .candidate = RuleEngine.classify(
@@ -82,6 +92,13 @@ final class CoreTests: XCTestCase {
     let m = try ModelCatalog.parse(Data(#"{"data":[{"id":"plain"}]}"#.utf8))
     XCTAssertNil(m[0].context)
     XCTAssertFalse(m[0].native)
+  }
+  func testLargeCatalogContextDoesNotOverflowBudgetCalculation() throws {
+    let data = try JSONSerialization.data(withJSONObject: ["models": [["slug": "large",
+      "context_window": Int.max, "effective_context_window_percent": 95, "max_tokens": 4096]]])
+    let model = try XCTUnwrap(ModelCatalog.parse(data).first)
+    XCTAssertEqual(model.context, Int.max)
+    XCTAssertEqual(model.inputBudget, 24_000)
   }
   func testSSEMultilineAndReset() {
     var p = SSEParser()

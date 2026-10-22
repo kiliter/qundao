@@ -15,6 +15,10 @@ public struct RealtimeBuffer: Codable, Equatable {
   public mutating func receive(_ message: Message, now: Date = Date()) {
     if entries[message.key] == nil { entries[message.key] = BufferedMessage(message: message, receivedAt: now) }
   }
+  mutating func enrichSender(_ message: Message) {
+    guard let existing = entries[message.key] else { return }
+    entries[message.key] = BufferedMessage(message: existing.message.fillingSender(from: message), receivedAt: existing.receivedAt)
+  }
   public mutating func discard(account: String, groups: Set<String>) {
     entries = entries.filter { $0.value.message.accountID != account || !groups.contains($0.value.message.groupID) }
   }

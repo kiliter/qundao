@@ -11,11 +11,10 @@ public struct CatalogModel: Codable, Identifiable, Hashable {
   public var defaultReasoning: String?
   public var native: Bool
   public var inputBudget: Int {
-    max(
-      512,
-      min(
-        24000, ((context ?? 16384) * effectivePercent / 100) - min(outputLimit ?? 4096, 4096) - 2000
-      ))
+    let window = max(0, context ?? 16384), percent = min(100, max(1, effectivePercent))
+    // 目录为外部输入；先除再合并余数，避免超大上下文乘百分比造成整数溢出。
+    let effective = window / 100 * percent + (window % 100) * percent / 100
+    return max(512, min(24000, effective - min(max(0, outputLimit ?? 4096), 4096) - 2000))
   }
 }
 public enum ModelCatalog {

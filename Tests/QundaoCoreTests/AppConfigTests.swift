@@ -2,6 +2,22 @@ import XCTest
 @testable import QundaoCore
 
 final class AppConfigTests: XCTestCase {
+  func testKnownFieldTypeErrorsCannotSilentlyClearRuntimeConfiguration() {
+    for source in [
+      "[alpha]\ntoken = 123", "[cpa]\napi_key = true", "[cpa]\nmodel = [\"bad\"]",
+      "[cpa]\nreasoning = false", "[cpa]\nconcurrency = \"3\"", "[cpa]\ninterval_minutes = false",
+      "[jev]\napi_key = 10", "[jev]\nbase_url = 123", "[jev]\nmodel = false",
+      "[jev]\nthreshold = \"0.8\"", "[rules]\nnames = \"名字\"", "[rules]\nkeywords = 1",
+      "[rules]\nsemantic = \"false\"", "[jev]\nmethod = 1", "[jev]\napi = true"
+    ] { XCTAssertThrowsError(try AppConfig.parse(source), source) }
+  }
+
+  func testNonFiniteThresholdCannotPoisonSnapshotPersistence() {
+    for value in ["nan", "+inf", "-inf"] {
+      XCTAssertThrowsError(try AppConfig.parse("[jev]\nthreshold = \(value)"))
+    }
+  }
+
   func testRoundTripKeepsAllFieldsIncludingQuotesAndChinese() throws {
     var c = AppConfig()
     c.alphaToken = "tok\"en#1"; c.cpaKey = "sk-test"; c.model = "gpt"; c.reasoning = "medium"; c.concurrency = 4

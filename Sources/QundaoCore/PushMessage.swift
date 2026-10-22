@@ -6,8 +6,13 @@ public enum PushMessage {
       return nil
     }
     let row = (root["message"] as? [String: Any]) ?? root
-    let accountID = root.string("accountId").isEmpty ? account : root.string("accountId")
-    guard accountID == account else { return nil }
+    // 订阅账号只补缺省字段；服务端明确提供的任一账号字段都必须一致。
+    guard !account.isEmpty, [root, row].allSatisfy({ envelope in
+      ["accountId", "account_id"].allSatisfy { key in
+        let value = envelope.string(key)
+        return value.isEmpty || value == account
+      }
+    }) else { return nil }
     func value(_ keys: [String]) -> String {
       for key in keys {
         let s = row.string(key)
@@ -24,7 +29,10 @@ public enum PushMessage {
     guard group.hasSuffix("@chatroom"), allowedGroups == nil || allowedGroups!.contains(group) else { return nil }
     let kind = value(["sessionType", "session_type"])
     guard kind.isEmpty || kind == "group" || kind == "2" else { return nil }
-    let id = value(["rawid", "server_id", "id", "messageId", "message_id"])
+    // 与 REST 一样跳过占位零值，仍可使用有效的本地消息 ID。
+    let id = ["server_id", "rawid", "id", "messageId", "message_id"]
+      .flatMap { key in [row.string(key), root.string(key)] }
+      .first { !$0.isEmpty && $0 != "0" } ?? ""
     guard !group.isEmpty, !id.isEmpty, id != "0",
       let rawTimestamp = Int64(
         value([
@@ -33,7 +41,7 @@ public enum PushMessage {
     else { return nil }
     let timestamp = rawTimestamp < 10_000_000_000 ? rawTimestamp * 1000 : rawTimestamp
     return Message(
-      id: id, accountID: accountID, groupID: group,
+      id: id, accountID: account, groupID: group,
       senderID: value(["sender_id", "senderId", "senderUsername"]),
       sender: value(["sourceName", "sender", "senderName", "sender_name"]),
       text: value(["text", "content", "plainText"]), timestamp: timestamp,

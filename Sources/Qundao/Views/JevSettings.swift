@@ -79,7 +79,7 @@ struct JevConnectionCard: View {
         Text("请输入有效地址，并选择对应接口协议。").font(.caption).foregroundStyle(.orange)
       }
       HStack {
-        Button("保存决策配置") { saveConnection() }.disabled(testing)
+        Button("保存决策配置") { saveConnection() }.disabled(testing || store.loadingCredentials)
         Button("保存并测试连接") {
           guard saveConnection() else { return }
           let savedConfig = config, savedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -98,7 +98,7 @@ struct JevConnectionCard: View {
               store.log.write("信息", "Jev 合成消息连接测试通过")
             } catch { notice = error.localizedDescription }
           }
-        }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(testing || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }.buttonStyle(P5ButtonStyle(kind: .primary)).disabled(testing || store.loadingCredentials || key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         if testing { ProgressView().controlSize(.small) }
         Spacer()
         Link("OpenRouter 文档", destination: URL(string: "https://openrouter.ai/docs/guides/community/jev")!).font(.caption)
