@@ -207,6 +207,7 @@ struct ConnectionPage: View {
         }
       }
       JevConnectionCard()
+      ModelPromptSettings()
       Text("密钥保存在 ~/.config/qundao/config.toml（仅本人可读，权限 600），也可直接编辑该文件，保存后自动生效。开始监听后，仅白名单群的未读消息会在周期摘要时发送至 CPA；即时命中后也发送该群当时的完整未读。私聊和白名单外群聊在入口丢弃。诊断日志会保存白名单群入参和出参中的聊天正文，令牌和模型密钥会隐藏。").font(
         .caption
       ).foregroundStyle(.secondary)

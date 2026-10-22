@@ -106,6 +106,9 @@ public struct Preferences: Codable, Equatable {
   public var keywords: [String] = []
   public var model = ""
   public var reasoning = "low"
+  // 可选字段兼容旧版状态；缺省或空白时使用内置提示词。
+  public var cpaSystemPrompt: String?
+  public var jevSystemPrompt: String?
   public var intervalMinutes = 15
   public var aiEnabled = true
   public var immediateMentions = true

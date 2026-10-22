@@ -83,6 +83,7 @@ struct JevConnectionCard: View {
         Button("保存并测试连接") {
           guard saveConnection() else { return }
           let savedConfig = config, savedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+          let savedPrompt = store.preferences.jevSystemPrompt
           testing = true
           notice = "正在用合成消息测试…"
           Task {
@@ -90,7 +91,7 @@ struct JevConnectionCard: View {
             do {
               let sample = Message(id: "test", accountID: "test", groupID: "test", senderID: "colleague",
                 sender: "测试同事", text: "@测试用户 请确认本次版本上线时间。", timestamp: 1)
-              _ = try await JevClient(key: savedKey, configuration: savedConfig,
+              _ = try await JevClient(key: savedKey, configuration: savedConfig, systemPrompt: savedPrompt,
                 trace: { EventLog.shared.record($0) }).decide(messages: [sample], context: [],
                 names: ["测试用户"], keywords: ["版本上线"], selfID: "test-user")
               notice = "连接成功。可在关键词与规则中选择 Jev 决策模型。"

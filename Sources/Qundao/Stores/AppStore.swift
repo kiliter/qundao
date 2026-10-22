@@ -271,6 +271,7 @@ import UserNotifications
     }
     if running && (oldJev != jevKey || oldPrefs.decisionMethod != preferences.decisionMethod
       || oldPrefs.decisionThreshold != preferences.decisionThreshold
+      || oldPrefs.jevSystemPrompt != preferences.jevSystemPrompt
       || oldPrefs.jevConfiguration != preferences.jevConfiguration) { jevMonitor.start() }
   }
   /// 把当前密钥和偏好写回配置文件；内容未变时不写。
@@ -316,7 +317,22 @@ import UserNotifications
     f(&snapshot.preferences)
     save()
     if running && (old.decisionMethod != preferences.decisionMethod || old.decisionThreshold != preferences.decisionThreshold
+      || old.jevSystemPrompt != preferences.jevSystemPrompt
       || old.jevConfiguration != preferences.jevConfiguration) { jevMonitor.start() }
+  }
+  /// 草稿只有成功写入配置文件后才生效；失败时保留当前运行配置。
+  func saveModelPrompts(summary: String, jev: String) throws {
+    try ModelPrompts.validate(summary: summary, jev: jev)
+    var candidate = AppConfig(preferences: preferences, alpha: alphaToken, cpa: cpaKey, jev: jevKey)
+    candidate.cpaSystemPrompt = ModelPrompts.effectiveSummary(summary) == ModelPrompts.summaryDefault ? nil : summary
+    candidate.jevSystemPrompt = ModelPrompts.effectiveJev(jev) == ModelPrompts.jevDefault ? nil : jev
+    try configFile.save(candidate)
+    let oldJevPrompt = preferences.jevSystemPrompt
+    lastConfig = candidate
+    candidate.apply(to: &snapshot.preferences)
+    save()
+    if running, oldJevPrompt != preferences.jevSystemPrompt { jevMonitor.start() }
+    log.write("信息", "模型提示词已保存")
   }
   func saveDecisionConnection(_ config: JevConfiguration, key: String) throws {
     _ = try config.endpoint()
@@ -785,13 +801,15 @@ import UserNotifications
     let prefs = preferences
     guard messageAdmission.allows(unread.scope) else { throw CancellationError() }
     guard let model = models.first(where: { $0.id == prefs.model }) else { throw AppFailure.message("所选模型不在目录中，请重新选择") }
-    let client = CPAClient(key: cpaKey, trace: { [weak self] record in
+    let client = CPAClient(key: cpaKey, systemPrompt: prefs.cpaSystemPrompt, trace: { [weak self] record in
       guard let self, self.messageAdmission.allows(unread.scope) else { return }
       var scoped = record
       scoped.scope = unread.scope.key
       self.log.record(scoped)
     })
-    let summarizer = SnapshotSummarizer(budget: model.inputBudget, names: prefs.names, keywords: prefs.keywords,
+    let budget = client.inputBudget(for: model)
+    guard budget > 0 else { throw AppFailure.message("摘要提示词超过所选模型的输入预算，请缩短提示词或更换模型") }
+    let summarizer = SnapshotSummarizer(budget: budget, names: prefs.names, keywords: prefs.keywords,
                                       selfID: activeAccount?.subjectID ?? "")
     return try await summarizer.run(unread.messages) { input, ids in
       try Task.checkCancellation()

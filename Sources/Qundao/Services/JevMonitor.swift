@@ -71,29 +71,11 @@ import QundaoCore
     defer { store.jevJudging = nil; store.refreshActivity() }
     do {
       store.decisionStatus = "Jev 正在判断"
-      let client = JevClient(key: store.jevKey, configuration: prefs.jevConfiguration, trace: { [weak store] in
+      let client = JevClient(key: store.jevKey, configuration: prefs.jevConfiguration,
+        systemPrompt: prefs.jevSystemPrompt, trace: { [weak store] in
         guard let store, store.messageAdmission.allows(batch.scope) else { return }
         store.log.record($0)
       })
-      // 用与摘要相同的完整分片策略承载长消息；Jev 每次仍遵守最多 20 条。
-      var fragments: [Message] = []
-      func split(_ message: Message) throws {
-        if message.text.utf8.count <= 20_000 { fragments.append(message); return }
-        guard message.text.count > 1 else { throw AppFailure.message("Jev 消息无法在预算内分片") }
-        let middle = message.text.index(message.text.startIndex, offsetBy: message.text.count / 2)
-        var a = message, b = message
-        a.text = String(message.text[..<middle]); b.text = String(message.text[middle...])
-        try split(a); try split(b)
-      }
-      for message in batch.messages { try split(message) }
-      var chunks: [[Message]] = [], chunk: [Message] = [], bytes = 0
-      for message in fragments {
-        if !chunk.isEmpty && (chunk.count >= 20 || bytes + message.text.utf8.count > 40_000) {
-          chunks.append(chunk); chunk = []; bytes = 0
-        }
-        chunk.append(message); bytes += message.text.utf8.count
-      }
-      if !chunk.isEmpty { chunks.append(chunk) }
       let keys = Set(batch.messages.map(\.key))
       var context: [Message] = [], contextBytes = 0
       for message in store.snapshot.messages.filter({
@@ -104,6 +86,9 @@ import QundaoCore
           context.append(message); contextBytes += message.text.utf8.count
         }
       }
+      // 提示词也计入实际请求预算；长消息完整分片，编号在每个请求内重新绑定。
+      let chunks = try client.prepareBatches(messages: batch.messages, context: context.reversed(),
+        names: prefs.names, keywords: prefs.keywords, selfID: selfID)
       var results: [JevDecision] = []
       for chunk in chunks {
         try Task.checkCancellation()
@@ -115,6 +100,7 @@ import QundaoCore
       try Task.checkCancellation()
       guard generation == current, store.preferences.accountID == batch.scope.account,
             store.preferences.jevConfiguration == prefs.jevConfiguration,
+            store.preferences.jevSystemPrompt == prefs.jevSystemPrompt,
             store.preferences.decisionThreshold == prefs.decisionThreshold,
             store.preferences.selectedGroups.contains(batch.scope.group),
             store.snapshot.decisionBatches?.contains(where: { $0.id == batch.id }) == true else { return }
