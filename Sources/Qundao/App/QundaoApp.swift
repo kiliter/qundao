@@ -120,6 +120,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     return true
   }
   func applicationWillTerminate(_ notification: Notification) {
+    MenuPlaceholders.shared.saveWidth()
     if let wakeObserver { NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver) }
     AppStore.shared.stopGroupStateRefresh()
     AppStore.shared.stop()

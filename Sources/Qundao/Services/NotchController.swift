@@ -12,7 +12,7 @@ import SwiftUI
 /// - 工具条与展开内容是两个独立的 NSHostingView，尺寸在动画期间保持不变，
 ///   SwiftUI 不会逐帧重新布局；展开内容常驻，展开时不再现场构建视图树。
 /// - 内容淡入淡出用图层 alpha 动画，同样不经过 SwiftUI。
-/// - 屏幕参数缓存，只在屏幕变化或唤醒时重新计算。
+/// - 屏幕参数缓存，只在选择、屏幕变化或唤醒时重新计算。
 @MainActor @Observable final class NotchController {
   @ObservationIgnored static var shared: NotchController?
   private(set) var expanded = false
@@ -32,18 +32,18 @@ import SwiftUI
   static let bounce = 0.14
   var reduceMotion: Bool { NSWorkspace.shared.accessibilityDisplayShouldReduceMotion }
 
-  struct ScreenMetrics: Equatable {
-    var frame: CGRect, visibleHeight: CGFloat, hasNotch: Bool, notchWidth: CGFloat, barHeight: CGFloat
+  var arrangingPlaceholders = false {
+    didSet { if oldValue != arrangingPlaceholders { layout() } }
   }
-  private(set) var metrics: ScreenMetrics
-  private static func measure() -> ScreenMetrics {
-    let screen = NSScreen.screens.first(where: { $0.safeAreaInsets.top > 0 }) ?? NSScreen.main ?? NSScreen.screens[0]
-    var notch: CGFloat = 90
-    if let left = screen.auxiliaryTopLeftArea, let right = screen.auxiliaryTopRightArea { notch = max(160, right.minX - left.maxX) }
-    return ScreenMetrics(frame: screen.frame, visibleHeight: screen.visibleFrame.height,
-                         hasNotch: screen.safeAreaInsets.top > 0, notchWidth: notch,
-                         barHeight: max(32, screen.safeAreaInsets.top))
+
+  private func currentPanelFrame(_ size: CGSize) -> CGRect {
+    let offset = arrangingPlaceholders ? max(metrics.menuBarHeight, metrics.barHeight) + 4 : 0
+    return metrics.panelFrame(size: size).offsetBy(dx: 0, dy: -offset)
   }
+
+  private(set) var availableScreens: [NotchScreen]
+  private(set) var currentScreen: NotchScreen?
+  private(set) var metrics: NotchScreenMetrics
   var notchWidth: CGFloat { metrics.notchWidth }
   var barHeight: CGFloat { metrics.barHeight }
   var barLayout: NotchBarLayout {
@@ -88,7 +88,11 @@ import SwiftUI
 
   init(store: AppStore) {
     self.store = store
-    metrics = Self.measure()
+    let screens = NotchScreen.connected()
+    let selected = NotchScreen.resolve(preferredID: store.preferences.notchDisplayID, screens: screens)
+    availableScreens = screens
+    currentScreen = selected
+    metrics = selected?.metrics ?? .unavailable
     panel = NSPanel(
       contentRect: .zero, styleMask: [.borderless, .nonactivatingPanel], backing: .buffered,
       defer: false)
@@ -146,16 +150,20 @@ import SwiftUI
         }
       })
     layout()
-    panel.orderFrontRegardless()
+    if currentScreen != nil { panel.orderFrontRegardless() }
     Self.shared = self
     store.onAttention = { [weak self] in self?.flash() }
     observeSizes()
+    observeDisplay()
   }
 
   /// 宽度设置与行数变化时调整形状；用 Observation 跟踪，不依赖某个视图是否在显示。
   private func observeSizes() {
-    withObservationTracking {
-      _ = compactWidth; _ = expandedWidth; _ = barWidth; _ = store.pendingAttention.threads.count
+    let width = withObservationTracking {
+      let layout = barLayout
+      _ = expanded
+      _ = store.pendingAttention.threads.count
+      return layout.compactWidth
     } onChange: { [weak self] in
       Task { @MainActor in
         guard let self else { return }
@@ -163,26 +171,55 @@ import SwiftUI
         self.observeSizes()
       }
     }
+    MenuPlaceholders.shared.resize(to: width)
+  }
+  private func observeDisplay() {
+    let previous = store.preferences.notchDisplayID
+    withObservationTracking {
+      _ = store.preferences.notchDisplayID
+    } onChange: { [weak self] in
+      Task { @MainActor in
+        guard let self else { return }
+        if self.store.preferences.notchDisplayID != previous { self.screenChanged() }
+        self.observeDisplay()
+      }
+    }
   }
   private func screenChanged() {
-    let next = Self.measure()
-    if next != metrics { metrics = next }
+    let screens = NotchScreen.connected()
+    if screens != availableScreens { availableScreens = screens }
+    let selected = NotchScreen.resolve(preferredID: store.preferences.notchDisplayID, screens: screens)
+    let changed = selected != currentScreen
+    currentScreen = selected
+    guard let selected else {
+      hoverTask?.cancel()
+      collapseTask?.cancel()
+      panel.orderOut(nil)
+      return
+    }
+    if changed {
+      hoverTask?.cancel()
+      collapseTask?.cancel()
+    }
+    if selected.metrics != metrics { metrics = selected.metrics }
     layout()
+    panel.orderFrontRegardless()
+    if changed, expanded, !pinned, !mouseInside { scheduleCollapse() }
   }
 
   /// 立即把窗口、宿主与遮罩设置为当前状态，无动画。
   func layout() {
     shrinkTask?.cancel()
-    setEnvelope(shapeSize)
-    lastShape = shapeSize
-    container.setShape(size: shapeSize, radius: shapeRadius, animated: false)
+    let size = shapeSize
+    setEnvelope(size)
+    lastShape = size
+    container.setShape(size: size, radius: shapeRadius, animated: false)
   }
   /// 最近一次设定的目标形状尺寸。
   @ObservationIgnored private var lastShape: CGSize = .zero
   private func setEnvelope(_ size: CGSize) {
     envelope = size
-    let frame = NSRect(x: metrics.frame.midX - size.width / 2, y: metrics.frame.maxY - size.height,
-                       width: size.width, height: size.height)
+    let frame = currentPanelFrame(size)
     CATransaction.begin()
     CATransaction.setDisableActions(true)
     if panel.frame != frame { panel.setFrame(frame, display: false) }
@@ -224,9 +261,7 @@ import SwiftUI
   }
   private var mouseInside: Bool {
     let size = shapeSize
-    let rect = NSRect(x: metrics.frame.midX - size.width / 2, y: metrics.frame.maxY - size.height,
-                      width: size.width, height: size.height)
-    return rect.contains(NSEvent.mouseLocation)
+    return currentPanelFrame(size).contains(NSEvent.mouseLocation)
   }
   func collapse() {
     collapseTask?.cancel()

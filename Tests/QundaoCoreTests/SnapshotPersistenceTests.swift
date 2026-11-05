@@ -119,6 +119,41 @@ final class SnapshotPersistenceTests: XCTestCase {
     XCTAssertEqual(restored.preferences.selectedGroups, state.preferences.selectedGroups)
   }
 
+  func testNotchDisplaySelectionAndResetSurviveSQLiteRestart() throws {
+    let directory = tempDirectory()
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let disk = SnapshotPersistence(directory: directory)
+    var state = AppSnapshot()
+    state.preferences.notchDisplayID = "synthetic-display-uuid"
+    state.preferences.notchDisplayName = "合成外接屏"
+    state.preferences.notchExpandedWidth = 560
+    state.preferences.selectedGroups = ["合成群@chatroom"]
+    try disk.save(state)
+    let restored = try SnapshotPersistence(directory: directory).load()
+    XCTAssertEqual(restored.preferences, state.preferences)
+    state.preferences.notchDisplayID = nil
+    state.preferences.notchDisplayName = nil
+    try disk.save(state)
+    let reset = try SnapshotPersistence(directory: directory).load()
+    XCTAssertNil(reset.preferences.notchDisplayID)
+    XCTAssertNil(reset.preferences.notchDisplayName)
+    XCTAssertEqual(reset.preferences.notchExpandedWidth, 560)
+    XCTAssertEqual(reset.preferences.selectedGroups, state.preferences.selectedGroups)
+  }
+
+  func testLegacyPreferencesWithoutDisplaySelectionDefaultToAutomatic() throws {
+    var state = AppSnapshot()
+    state.preferences.notchExpandedWidth = 560
+    let data = try JSONEncoder().encode(state)
+    let json = try XCTUnwrap(JSONSerialization.jsonObject(with: data) as? [String: Any])
+    let preferences = try XCTUnwrap(json["preferences"] as? [String: Any])
+    XCTAssertNil(preferences["notchDisplayID"])
+    XCTAssertNil(preferences["notchDisplayName"])
+    let restored = try JSONDecoder().decode(AppSnapshot.self, from: data)
+    XCTAssertNil(restored.preferences.notchDisplayID)
+    XCTAssertEqual(restored.preferences.notchExpandedWidth, 560)
+  }
+
   func testLegacyJSONImportedOnceAndBackedUpWithoutLoss() throws {
     let directory = tempDirectory()
     defer { try? FileManager.default.removeItem(at: directory) }

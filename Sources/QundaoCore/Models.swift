@@ -126,6 +126,9 @@ public struct Preferences: Codable, Equatable {
   public var previousSelectedGroups: Set<String>?
   public var notchCompactWidth: Double?
   public var notchExpandedWidth: Double?
+  // nil 为自动选择；屏幕断开时保留 UUID 与名称，接回后恢复。旧状态保持自动选择。
+  public var notchDisplayID: String?
+  public var notchDisplayName: String?
   public var summaryConcurrency: Int?
   public var realtimeCapacity: Int?
   public var realtimeFlushSeconds: Double?

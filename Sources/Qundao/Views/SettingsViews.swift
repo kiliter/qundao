@@ -86,6 +86,9 @@ struct AppearancePage: View {
     P5SettingsColumns {
       P5PaperCard {
         IslandMiniPreview()
+        P5SectionTitle("刘海位置")
+        IslandDisplayControls()
+        Divider()
         P5SectionTitle("刘海尺寸")
         IslandSizeControls()
         Divider()
