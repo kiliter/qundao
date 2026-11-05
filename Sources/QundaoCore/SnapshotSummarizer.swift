@@ -63,27 +63,32 @@ public struct SnapshotSummarizer {
       batch.append(fragment)
     }
     if !batch.isEmpty { batches.append(batch) }
-    var notes: [SummaryNote] = []
+    var results: [AIResult] = []
     for batch in batches {
       try Task.checkCancellation()
       let result = try await request(input(batch, stage: "未读片段整理"), Set(batch.map(\.id)))
       try result.validate(allowedIDs: Set(batch.map(\.id)))
-      notes.append(try SummaryNote(result))
+      results.append(result)
     }
     // 所有分段均完成后才汇总；极长中间输出也要完整分片送入下一层，绝不 prefix 截断。
     for level in 1...12 {
       try Task.checkCancellation()
       let stage = "完整快照汇总第\(level)层"
-      if try input(notes: notes.map(\.text), stage: stage).encoded().count <= budget {
+      let notes = try results.map(SummaryNote.init)
+      let whole = input(notes: notes.map(\.text), stage: stage)
+      let finalInput: SummaryModelInput?
+      if try whole.encoded().count <= budget { finalInput = whole }
+      else { finalInput = try indexedFinalInput(results, stage: stage) }
+      if let finalInput {
         let references = Set(notes.flatMap(\.referenceIDs))
-        let result = try await request(input(notes: notes.map(\.text), stage: stage), references)
+        let result = try await request(finalInput, references)
         try result.validate(allowedIDs: references); try Task.checkCancellation(); return result
       }
       var pieces: [SummaryNote] = []
+      let overhead = try input(notes: [], stage: stage).encoded().count
+      let target = overhead + (budget - overhead) / 2
       func splitNote(_ note: SummaryNote) throws {
         // 每片至多使用半个净预算，使下一层有空间合并多个片段。
-        let overhead = try input(notes: [], stage: stage).encoded().count
-        let target = overhead + (budget - overhead) / 2
         if try input(notes: [note.text], stage: stage).encoded().count <= target { pieces.append(note); return }
         let left: SummaryNote, right: SummaryNote
         do { (left, right) = try note.split() }
@@ -103,17 +108,49 @@ public struct SnapshotSummarizer {
         current.append(piece)
       }
       if !current.isEmpty { groups.append(current) }
-      var next: [SummaryNote] = []
+      var next: [AIResult] = []
       for group in groups {
         try Task.checkCancellation()
         let references = Set(group.flatMap(\.referenceIDs))
         let result = try await request(input(notes: group.map(\.text), stage: stage), references)
         try result.validate(allowedIDs: references)
-        next.append(try SummaryNote(result))
+        next.append(result)
       }
-      notes = next
+      // 完整内容逐条相同才判定无进展；字节数相同不代表内容相同。
+      if next == results { break }
+      results = next
     }
     throw AppFailure.message("分段汇总未能在预算内收敛，保留任务与成功标记等待重试")
+  }
+
+  /// 仅尝试完整汇总：把重复 evidenceIDs 的原值集中写一次，每条整理按下标保留其引用顺序。
+  /// 所有原文摘要、判断与原始 ID 同批可见；若仍超预算则继续原来的完整分片流程。
+  func indexedFinalInput(_ results: [AIResult], stage: String) throws -> SummaryModelInput? {
+    var ids: [String] = [], indices: [String: Int] = [:], repeated = false
+    var notes: [String] = [], minimumBytes = 0
+    func encode(_ object: Any) throws -> String {
+      String(decoding: try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys]), as: UTF8.self)
+    }
+    for result in results {
+      minimumBytes += result.summary.utf8.count + result.relevanceReason.utf8.count
+      if minimumBytes > budget { return nil }
+      let refs = result.evidenceIDs.map { id -> Int in
+        if let index = indices[id] { repeated = true; return index }
+        let index = ids.count
+        ids.append(id); indices[id] = index; minimumBytes += id.utf8.count
+        return index
+      }
+      if minimumBytes > budget { return nil }
+      // 从完整结果替换引用字段，保留判断及今后可能新增的业务字段。
+      guard var row = try JSONSerialization.jsonObject(with: JSONEncoder().encode(result)) as? [String: Any] else { return nil }
+      row.removeValue(forKey: "evidenceIDs")
+      row["证据下标"] = refs
+      notes.append(try encode(row))
+    }
+    guard repeated else { return nil }
+    let legend = try encode(["原始消息ID表（下标从0开始）": ids])
+    let candidate = input(notes: [legend] + notes, stage: stage)
+    return try candidate.encoded().count <= budget ? candidate : nil
   }
 }
 
@@ -123,7 +160,9 @@ private struct SummaryNote {
   private let referenceTokens: [String: String]
   var referenceIDs: Set<String> { Set(referenceTokens.keys) }
   init(_ result: AIResult) throws {
-    text = String(decoding: try JSONEncoder().encode(result), as: UTF8.self)
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.sortedKeys] // 稳定切片边界，不依赖进程内的键遍历顺序。
+    text = String(decoding: try encoder.encode(result), as: UTF8.self)
     let ids = Set(result.evidenceIDs + result.judgements.map(\.messageID))
     referenceTokens = try Dictionary(uniqueKeysWithValues: ids.map { id in
       (id, String(decoding: try JSONEncoder().encode(id), as: UTF8.self))

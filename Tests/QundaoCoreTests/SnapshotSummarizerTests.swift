@@ -95,6 +95,29 @@ final class SnapshotSummarizerTests: XCTestCase {
     }
     XCTAssertEqual(Array(received.utf8), Array(text.utf8))
   }
+  func testOverlappingEvidenceIsIndexedWithoutLosingItsOwnerOrEscaping() throws {
+    let ids = (1...3).map { "M\($0)-\"\\" + String(repeating: "x", count: 220) }
+    let rows = [[ids[0], ids[1]], [ids[1], ids[2]]].map {
+      AIResult(summary: "继续汇总", relevant: true, relevanceReason: "工作事项", evidenceIDs: $0, judgements: [])
+    }
+    let summarizer = SnapshotSummarizer(budget: 1200, names: [], keywords: [], selfID: "me")
+    let original = try rows.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+    let stage = "完整快照汇总第5层"
+    XCTAssertGreaterThan(try SummaryModelInput(notes: original, names: [], keywords: [], selfID: "me", stage: stage).encoded().count, 1200)
+    let packed = try XCTUnwrap(summarizer.indexedFinalInput(rows, stage: stage))
+    XCTAssertLessThanOrEqual(try packed.encoded().count, 1200)
+    let legend = try JSONDecoder().decode([String: [String]].self, from: Data(packed.notes[0].utf8))
+    let table = try XCTUnwrap(legend.values.first)
+    XCTAssertEqual(table, ids)
+    XCTAssertEqual(packed.notes.count, rows.count + 1)
+    for (note, original) in zip(packed.notes.dropFirst(), rows) {
+      var row = try XCTUnwrap(JSONSerialization.jsonObject(with: Data(note.utf8)) as? [String: Any])
+      let indices = try XCTUnwrap(row.removeValue(forKey: "证据下标") as? [Int])
+      row["evidenceIDs"] = try indices.map { index in try XCTUnwrap(table.indices.contains(index) ? table[index] : nil) }
+      XCTAssertEqual(try JSONDecoder().decode(AIResult.self, from: JSONSerialization.data(withJSONObject: row)), original)
+    }
+  }
+
   func testLongNotesKeepWholeEscapedEvidenceIDsAndOnlyExposeVisibleReferences() async throws {
     let messages = (1...3).map { n in
       Message(id: "M\(n)-\"\\" + String(repeating: "x", count: 220), accountID: "a", groupID: "g",
@@ -104,7 +127,7 @@ final class SnapshotSummarizerTests: XCTestCase {
       ($0.id, String(decoding: try JSONEncoder().encode($0.id), as: UTF8.self))
     })
     var visibleDuringReduction = Set<String>()
-    _ = try await SnapshotSummarizer(budget: 1200, names: [], keywords: [], selfID: "me").run(messages) { input, allowed in
+    let final = try await SnapshotSummarizer(budget: 1200, names: [], keywords: [], selfID: "me").run(messages) { input, allowed in
       XCTAssertLessThanOrEqual(try input.encoded().count, 1200)
       if let message = input.messages.first {
         return AIResult(summary: String(repeating: "完整整理", count: 140), relevant: true,
@@ -116,6 +139,7 @@ final class SnapshotSummarizerTests: XCTestCase {
       return AIResult(summary: "继续汇总", relevant: !allowed.isEmpty, relevanceReason: "工作事项",
                       evidenceIDs: allowed.sorted(), judgements: [])
     }
+    XCTAssertEqual(Set(final.evidenceIDs), Set(messages.map(\.id)))
     XCTAssertEqual(visibleDuringReduction, Set(messages.map(\.id)), "证据 ID 不能在拆片时被切断或丢失")
   }
 }
